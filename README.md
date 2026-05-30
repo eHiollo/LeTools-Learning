@@ -229,7 +229,7 @@ python kuavo_deploy/eval.py
 **提交 Issue 前请先：**
 
 1. 搜索 [已有 Issues](https://github.com/LejuRobotics/kuavo_learning_studio/issues?q=is%3Aissue) 和 [常见问题 FAQ](https://github.com/huangrc1110/kuavo_docs/blob/master/docs/troubleshooting/faq.md)，避免重复。
-2. 阅读 [贡献指南](https://github.com/huangrc1110/kuavo_docs/blob/master/CONTRIBUTING.md) 了解分支策略与 PR 流程。
+2. 阅读 [贡献指南](https://github.com/LejuRobotics/kuavo_learning_studio/blob/main/CONTRIBUTING.md) 了解分支策略与 PR 流程。
 3. 使用对应的 [Issue 模板](https://github.com/LejuRobotics/kuavo_learning_studio/issues/new/choose)，填全环境与复现信息。
 
 **响应预期：** 本项目由乐聚机器人算法团队在工作时间维护。我们会尽力响应所有公开渠道的反馈，但**不对修复时间作正式 SLA 承诺**；如需企业级保障，请走商业合作邮箱。
@@ -239,8 +239,8 @@ python kuavo_deploy/eval.py
 内部沟通流程不公开维护在本仓库，请通过以下入口：
 
 - **KDC 用户群**（飞书）：日常使用答疑
-- **飞书表格**：缺陷提报 / 意见反馈，按严重等级流转（严重缺陷 → 紧急修复；普通缺陷 → 算法部临时方案 + 正式版本修复；意见建议 → 评审后纳入计划）
-- **飞书项目**：必须新增的功能（如新模型接入）走正式需求流程
+- **飞书表格**：缺陷提报 / 意见反馈 填入飞书表格，将会按严重等级流转（严重缺陷 → 紧急修复；普通缺陷 → 算法部临时方案 + 正式版本修复；意见建议 → 评审后纳入计划）
+- **飞书项目**：如需新增全新的功能（如新模型接入）走正式需求流程
 
 详细流程请见公司内部 Wiki。
 

@@ -62,25 +62,28 @@ if [ ! -f "third_party/lerobot/pyproject.toml" ]; then
 fi
 
 if $_lerobot_empty; then
+    _LEROBOT_COMMIT="a07f22e22ce88cddff1f6eddced9ea008fbfc37c"
+    _LEROBOT_CMD='git -c url."https://gh-proxy.com/https://github.com/".insteadOf="https://github.com/" submodule update --init --recursive --jobs 8 && git -C third_party/lerobot checkout '"${_LEROBOT_COMMIT}"
+
     echo "⚠️  third_party/lerobot 目录为空或子模块未初始化（未找到 pyproject.toml）。"
     echo ""
-    printf "是否现在自动执行 git submodule update --init --recursive 来拉取？[y/N] "
+    printf "是否现在自动执行 git submodule update --init --recursive 来拉取并切换到指定 commit: ${_LEROBOT_COMMIT}？[y/N] "
     read -r _ans
     case "$_ans" in
         [Yy]|[Yy][Ee][Ss])
-            echo "正在拉取子模块..."
+            echo "正在拉取子模块并切换到指定 commit: ${_LEROBOT_COMMIT} ..."
             git -c url."https://gh-proxy.com/https://github.com/".insteadOf="https://github.com/" \
-                submodule update --init --recursive --jobs 8
+                submodule update --init --recursive --jobs 8 && git -C third_party/lerobot checkout "${_LEROBOT_COMMIT}"
             if [ ! -f "third_party/lerobot/pyproject.toml" ]; then
                 echo "❌ 子模块拉取后仍未找到 third_party/lerobot/pyproject.toml，请检查网络或手动执行："
-                echo "   git submodule update --init --recursive"
+                echo "   ${_LEROBOT_CMD}"
                 exit 1
             fi
-            echo "✅ 子模块拉取完成！"
+            echo "✅ 子模块拉取并切换 commit hash: ${_LEROBOT_COMMIT} 完成！"
             ;;
         *)
             echo "❌ 已跳过。请手动执行以下命令后重新运行此脚本："
-            echo "   git submodule update --init --recursive"
+            echo "   ${_LEROBOT_CMD}"
             exit 1
             ;;
     esac
