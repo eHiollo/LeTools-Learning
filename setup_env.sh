@@ -92,6 +92,44 @@ fi
 python -m pip install -e "third_party/lerobot[training,dataset]"
 echo "✅ lerobot项目基础依赖（含 training, dataset）安装完成！"
 
+
+# New: Flash-attn installation moved here
+install_flash_attn() {
+    if [ ! -d "flash_attn-2.8.3" ]; then
+        echo "未检测到 flash_attn-2.8.3 文件夹，开始下载并解压..."
+        #wget https://files.pythonhosted.org/packages/3b/b2/8d76c41ad7974ee264754709c22963447f7f8134613fd9ce80984ed0dab7/flash_attn-2.8.3.tar.gz
+        # Tsinghua tuna server may be faster
+        wget https://pypi.tuna.tsinghua.edu.cn/packages/3b/b2/8d76c41ad7974ee264754709c22963447f7f8134613fd9ce80984ed0dab7/flash_attn-2.8.3.tar.gz
+        tar -zxvf flash_attn-2.8.3.tar.gz
+    else
+        echo "文件夹 flash_attn-2.8.3 已存在，跳过下载和解压。"
+    fi
+
+    # 尝试在 Python 中导入 flash_attn，并将输出和错误信息丢弃 (&> /dev/null)
+    if python -c "import flash_attn" &> /dev/null; then
+        echo "检测到 flash_attn 已安装，跳过编译。"
+    else
+        echo "未检测到 flash_attn，准备开始编译安装..."
+
+        # 进入目录，如果目录不存在则报错并退出
+        cd flash_attn-2.8.3/ || { echo "错误: 找不到 flash_attn-2.8.3/ 目录"; exit 1; }
+
+        # 使用 MAX_JOBS=4 限制编译核心数，防止内存溢出 (OOM)
+        # if [ls "dist/*.whl" 2> /dev/null | grep -q .]; then
+        #     echo "正在使用 MAX_JOBS=4 编译 flash-attn，这可能需要一些时间..."
+        #     MAX_JOBS=4 pytdhon setup.py bdist_wheel
+        # fi
+        echo "Installing flash-attn from flash_attn-2.8.3/*.whl ..."
+        pip install dist/*.whl || { echo "正在使用 MAX_JOBS=4 编译 flash-attn，这可能需要一些时间..."; MAX_JOBS=4 FLASH_ATTENTION_FORCE_BUILD=TRUE python setup.py bdist_wheel; pip install dist/*.whl; }
+
+        # 返回上级目录
+        cd ../
+
+        echo "flash_attn 安装流程执行完毕。"
+    fi
+}
+
+
 echo ""
 echo "==================================================="
 echo "👉 第 3 步：安装lerobot模型及训练相关扩展依赖(third_party/lerobot/pyproject.toml)"
@@ -133,9 +171,19 @@ else
                 ;;
             gr00t | groot)
                 echo "📦 安装 gr00t 依赖（transformers + peft + diffusers + dm-tree + timm + decord + ninja）..."
-                echo "⚠️  注意：gr00t 还需要 flash-attn，将在第 5 步中单独安装。"
-                python -m pip install -e "third_party/lerobot[groot]"
-                echo "✅ gr00t 依赖安装完成（flash-attn 请在第 5 步安装）！"
+                echo "⚠️  注意：gr00t 还需要 flash-attn，需要在此安装。是否现在安装 flash-attn？安装请输入 Y，跳过请输入 N: "
+                read -r INSTALL_FLASH_ATTN
+                case "$INSTALL_FLASH_ATTN" in
+                    [Yy])
+                        install_flash_attn
+                        python -m pip install -e "third_party/lerobot[groot]"
+                        echo "✅ gr00t 依赖安装完成！"
+                        ;;
+                    *)
+                        echo "⏭️  已跳过 flash-attn 安装。"
+                        echo "⚠️  注意：gr00t 必须需要 flash-attn，gr00t依赖已经跳过安装。"
+                        ;;
+                esac
                 ;;
             wall_x | wall-x | wallx)
                 echo "📦 安装 wall_x 依赖（transformers + peft + scipy + torchdiffeq + qwen-vl-utils）..."
@@ -200,36 +248,7 @@ while true; do
     read -r -p "是否安装 flash-attn？安装请输入 Y，跳过请输入 N: " INSTALL_FLASH_ATTN
     case "$INSTALL_FLASH_ATTN" in
         [Yy])
-            if [ ! -d "flash_attn-2.8.3" ]; then
-                echo "未检测到 flash_attn-2.8.3 文件夹，开始下载并解压..."
-                wget https://files.pythonhosted.org/packages/3b/b2/8d76c41ad7974ee264754709c22963447f7f8134613fd9ce80984ed0dab7/flash_attn-2.8.3.tar.gz
-                tar -zxvf flash_attn-2.8.3.tar.gz
-            else
-                echo "文件夹 flash_attn-2.8.3 已存在，跳过下载和解压。"
-            fi
-
-            # 尝试在 Python 中导入 flash_attn，并将输出和错误信息丢弃 (&> /dev/null)
-            if python -c "import flash_attn" &> /dev/null; then
-                echo "检测到 flash_attn 已安装，跳过编译。"
-            else
-                echo "未检测到 flash_attn，准备开始编译安装..."
-
-                # 进入目录，如果目录不存在则报错并退出
-                cd flash_attn-2.8.3/ || { echo "错误: 找不到 flash_attn-2.8.3/ 目录"; exit 1; }
-
-                # 使用 MAX_JOBS=4 限制编译核心数，防止内存溢出 (OOM)
-                # if [ls "dist/*.whl" 2> /dev/null | grep -q .]; then
-                #     echo "正在使用 MAX_JOBS=4 编译 flash-attn，这可能需要一些时间..."
-                #     MAX_JOBS=4 pytdhon setup.py bdist_wheel
-                # fi
-                echo "Installing flash-attn from flash_attn-2.8.3/*.whl ..."
-                pip install dist/*.whl || { echo "正在使用 MAX_JOBS=4 编译 flash-attn，这可能需要一些时间..."; MAX_JOBS=4 FLASH_ATTENTION_FORCE_BUILD=TRUE python setup.py bdist_wheel; pip install dist/*.whl; }
-
-                # 返回上级目录
-                cd ../
-
-                echo "flash_attn 安装流程执行完毕。"
-            fi
+            install_flash_attn
             break
             ;;
         [Nn])
