@@ -1,0 +1,4 @@
+# 云端 Diffusion 简化覆盖（48GB 显存，与 total 合并）
+training:
+  batch_size: 32
+  num_workers: 8
