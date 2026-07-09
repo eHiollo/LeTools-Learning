@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  train:
+    image: letools-train:lerobot-0.4.2
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.letools
+      args:
+        CUDA_VER: "12.8"
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - HF_HOME=/workspace/LeTools-Learning/data/hf_cache
+      - HF_LEROBOT_HOME=/workspace/LeTools-Learning/data/hf_cache
+      - TRANSFORMERS_CACHE=/workspace/LeTools-Learning/data/hf_cache
+      - HF_ENDPOINT=https://hf-mirror.com
+    volumes:
+      - ..:/workspace/LeTools-Learning
+      - ../data:/workspace/LeTools-Learning/data
+    working_dir: /workspace/LeTools-Learning
+    command: >
+      bash -lc "source /opt/conda/etc/profile.d/conda.sh && conda activate letools &&
+                python -c \"import torch; print('cuda:', torch.cuda.is_available())\""

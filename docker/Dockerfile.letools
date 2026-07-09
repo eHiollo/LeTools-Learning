@@ -1,0 +1,45 @@
+# letools-train: ACT / Diffusion / lerobot 版 PI0/PI05
+# 构建: docker build -f docker/Dockerfile.letools -t letools-train:lerobot-0.4.2 .
+ARG CUDA_VER=12.8
+FROM nvidia/cuda:${CUDA_VER}.0-cudnn-devel-ubuntu20.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+# 国内 APT 源
+RUN sed -i 's|archive.ubuntu.com|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list && \
+    sed -i 's|security.ubuntu.com|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl wget git build-essential lsb-release gnupg2 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ROS Noetic（部署/仿真侧需要）
+RUN sh -c 'echo "deb http://packages.ros.org/ros/ubuntu focal main" > /etc/apt/sources.list.d/ros-latest.list' && \
+    curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | apt-key add - && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ros-noetic-ros-base \
+    ros-noetic-cv-bridge \
+    ros-noetic-apriltag-ros \
+    && rm -rf /var/lib/apt/lists/*
+
+# Miniforge3
+RUN wget -q https://mirrors.tuna.tsinghua.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-x86_64.sh -O /tmp/mf.sh && \
+    bash /tmp/mf.sh -b -p /opt/conda && rm /tmp/mf.sh
+ENV PATH=/opt/conda/bin:$PATH
+
+RUN source /opt/conda/etc/profile.d/conda.sh && \
+    conda create -n letools python=3.12 -y
+
+WORKDIR /workspace/LeTools-Learning
+COPY . /workspace/LeTools-Learning
+
+RUN source /opt/conda/etc/profile.d/conda.sh && conda activate letools && \
+    conda install -y -c nvidia cuda-toolkit=${CUDA_VER} && \
+    chmod +x docker/setup_env_docker.sh && \
+    MAX_JOBS=4 bash docker/setup_env_docker.sh
+
+ENV HF_ENDPOINT=https://hf-mirror.com
+ENV PATH=/opt/conda/envs/letools/bin:/opt/conda/bin:$PATH
+WORKDIR /workspace/LeTools-Learning
+CMD ["bash"]

@@ -1,0 +1,36 @@
+dataset:
+  repo_id: "lerobot_v3.0"
+  root: "/workspace/LeTools-Learning/data/lerobot/lerobot_v3.0"
+  episodes: null
+  use_imagenet_stats: true
+  video_backend: pyav
+
+training:
+  output_dir: "outputs/train/act_smoke"
+  job_name: "act_smoke"
+  resume: false
+  seed: 1000
+  num_workers: 0
+  batch_size: 1
+  steps: 10
+  log_freq: 1
+  save_freq: 10
+  save_checkpoint: true
+  eval_freq: 0
+
+eval:
+  n_episodes: 1
+  batch_size: 1
+
+wandb:
+  enable: false
+
+policy:
+  type: "act"
+  device: "cuda"
+  use_amp: false
+  push_to_hub: false
+  repo_id: null
+  chunk_size: 20
+  n_action_steps: 20
+  pretrained_path: null

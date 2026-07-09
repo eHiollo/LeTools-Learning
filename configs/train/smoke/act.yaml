@@ -1,0 +1,3 @@
+# smoke 额外覆盖（simple 模式会与 total 合并；此处可留空或写少量覆盖）
+training:
+  steps: 10

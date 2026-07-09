@@ -1,0 +1,12 @@
+data/
+outputs/
+.git/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+*.bag
+*.safetensors
+deploy.env
+PHASE0_STATUS.md
+PHASE1_STATUS.md
+kuavo_model/external_models/
