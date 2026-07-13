@@ -54,6 +54,7 @@ set +u
 conda activate letools
 set -u
 set -o pipefail
+export PYTHONPATH="/workspace/LeTools-Learning:${PYTHONPATH:-}"
 
 python - <<'PY'
 import os, grpc, gym_hil, torch
@@ -71,7 +72,7 @@ OUT_ACTOR="data/rl_runs/${RUN_ID}_actor"
 LEARNER_LOG="data/rl_runs/${RUN_ID}_learner.log"
 ACTOR_LOG="data/rl_runs/${RUN_ID}_actor.log"
 
-python -m lerobot.rl.learner --config_path "${CONFIG}" --output_dir "${OUT}" >"${LEARNER_LOG}" 2>&1 &
+python -m kuavo_rl.hilserl_cli learner --config_path "${CONFIG}" --output_dir "${OUT}" >"${LEARNER_LOG}" 2>&1 &
 LPID=$!
 echo "learner_pid=${LPID} out=${OUT}"
 echo "Keyboard tip: focus the MuJoCo window, press Space to intervene."
@@ -100,7 +101,7 @@ fi
 set +e
 # Actor logs go to file AND console so keyboard tips / errors are visible.
 timeout "${ACTOR_TIMEOUT_S}" \
-  python -m lerobot.rl.actor --config_path "${CONFIG}" --output_dir "${OUT_ACTOR}" \
+  python -m kuavo_rl.hilserl_cli actor --config_path "${CONFIG}" --output_dir "${OUT_ACTOR}" \
   2>&1 | tee "${ACTOR_LOG}"
 ACODE=${PIPESTATUS[0]}
 set -e

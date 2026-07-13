@@ -26,6 +26,7 @@
 | # | 决策 | 原因 |
 |---|---|---|
 | D1 | `kuavo_rl` 放主仓库，不改 `third_party/lerobot` | 手册硬约束；便于升级上游 |
+| D14 | Phase1 所需 upstream 行为用 **运行时 monkeypatch**（`kuavo_rl/lerobot_patches.py` + `hilserl_cli`） | 曾误改 submodule；已回退；入口改为 `python -m kuavo_rl.hilserl_cli {learner\|actor}` |
 | D2 | Env 通过 `RobotBackend` 抽象隔离 ROS | 无硬件/无 ROS 时可单测；真机接入时再挂 `ROSBackend` |
 | D3 | 首版 `ROSBackend` 可选依赖 `kuavo_deploy` | 避免训练 Python 强制 import ROS Noetic 包 |
 | D4 | SafetyGate 纯 numpy，无 ROS | 可独立单测 |
@@ -202,7 +203,8 @@ PYTHONPATH=. python scripts/rl/run_kuavo_sim_smoke.py --steps 10 --shadow
 
 | ID | 问题 | 影响 | 处理 |
 |---|---|---|---|
-| P12 | `eval_freq` 字段已改名；`dataset=null` 触发 `TrainPipelineConfig.validate` AttributeError | learner/actor 起不来 | 配置改用 `env_eval_freq`；`TrainRLServerPipelineConfig.validate` 对 null dataset 做 sentinel（D12 相关） |
+| P12 | `eval_freq` 字段已改名；`dataset=null` 触发 `TrainPipelineConfig.validate` AttributeError | learner/actor 起不来 | 配置改用 `env_eval_freq`；**运行时 patch** `TrainRLServerPipelineConfig.validate`（不改 submodule） |
+| P18 | 曾直接改 `third_party/lerobot`（train_rl / gym_manipulator） | 违反 D1 | 已 `git checkout` 回退；逻辑迁至 `kuavo_rl/lerobot_patches.py` |
 | P13 | actor/learner 共用同一 `output_dir` 时第二进程 `FileExistsError` | 官方同配置双进程在本仓库 validate 下冲突 | smoke 脚本给 actor 独立 `--output_dir` |
 | P14 | `mujoco.Renderer` 缺失 / EGL 无 PLATFORM_DEVICE；`mujoco 3.10` 与 gym-hil/`mj_fullM` 不兼容 | env.reset/step 失败 | pin `mujoco<3.9`（3.8.1）+ PyOpenGL；默认 `osmesa`（D13） |
 | P15 | Keyboard/Gamepad 需要 X11+pynput；`Base-v0` 直接 `gym.make(..., use_gripper=...)` 参数非法 | Docker 无显示器无法走人机路径 | headless 走 `gym_hil.factory` + `use_inputs_control=False`；有显示器时仍可用 Keyboard |
