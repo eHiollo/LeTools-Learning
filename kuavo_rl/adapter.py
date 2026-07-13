@@ -36,7 +36,11 @@ def make_kuavo_hilserl_env(
 
     if backend is None:
         if kuavo_gym_env is not None:
-            backend = ROSBackend(kuavo_gym_env, publish_unit=cfg.arm_publish_unit)
+            backend = ROSBackend(
+                kuavo_gym_env,
+                publish_unit=cfg.arm_publish_unit,
+                image_shape_chw=cfg.image_shape_chw,
+            )
         else:
             backend = MockBackend(image_shape_chw=cfg.image_shape_chw)
 

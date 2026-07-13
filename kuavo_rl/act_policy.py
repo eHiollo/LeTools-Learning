@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-import pickle
 import socket
-import struct
 from typing import Any
 
 import numpy as np
 
 from kuavo_rl.contracts import ACTION_DIM, IMAGE_KEYS, IMAGE_SHAPE_CHW
+from kuavo_rl.ipc import pack_arrays, recv_msg, send_msg, unpack_arrays
+
+# Back-compat aliases used by act_infer_server.py
+_pack_arrays = pack_arrays
+_unpack_arrays = unpack_arrays
+send_pickle = send_msg
+recv_pickle = recv_msg
 
 
 def obs_to_act_numpy(obs: dict) -> dict[str, np.ndarray]:
@@ -30,7 +35,6 @@ def obs_to_act_numpy(obs: dict) -> dict[str, np.ndarray]:
         if arr.ndim == 3 and arr.shape[-1] == 3:
             arr = np.transpose(arr, (2, 0, 1))
         if arr.shape[-2:] != (h, w):
-            # Lazy import: host ROS env may lack cv2 in some shells; server always has it.
             import cv2
 
             hwc = np.transpose(arr, (1, 2, 0))
@@ -49,49 +53,6 @@ def obs_to_act_numpy(obs: dict) -> dict[str, np.ndarray]:
         out[key] = arr
     return out
 
-
-def _recv_exact(conn: socket.socket, n: int) -> bytes:
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = conn.recv(n - len(buf))
-        if not chunk:
-            raise ConnectionError("socket closed while receiving")
-        buf.extend(chunk)
-    return bytes(buf)
-
-
-def _pack_arrays(arrays: dict[str, np.ndarray]) -> dict[str, tuple[str, list[int], bytes]]:
-    """Pack ndarrays as (dtype, shape, raw bytes) so pickle never embeds numpy modules."""
-    packed: dict[str, tuple[str, list[int], bytes]] = {}
-    for key, value in arrays.items():
-        arr = np.ascontiguousarray(np.asarray(value))
-        packed[key] = (str(arr.dtype), list(arr.shape), arr.tobytes())
-    return packed
-
-
-def _unpack_arrays(packed: dict[str, tuple[str, list[int], bytes]]) -> dict[str, np.ndarray]:
-    out: dict[str, np.ndarray] = {}
-    for key, (dtype, shape, data) in packed.items():
-        out[key] = np.frombuffer(data, dtype=np.dtype(dtype)).reshape(shape).copy()
-    return out
-
-
-def send_msg(conn: socket.socket, obj: Any) -> None:
-    # Only pickle plain Python types / bytes (never raw np.ndarray objects).
-    payload = pickle.dumps(obj, protocol=4)
-    conn.sendall(struct.pack("!I", len(payload)) + payload)
-
-
-def recv_msg(conn: socket.socket) -> Any:
-    (n,) = struct.unpack("!I", _recv_exact(conn, 4))
-    if n > 256 * 1024 * 1024:
-        raise ValueError(f"payload too large: {n}")
-    return pickle.loads(_recv_exact(conn, n))
-
-
-# Back-compat aliases
-send_pickle = send_msg
-recv_pickle = recv_msg
 
 class LerobotActChunkPolicy:
     """LeRobot ACTPolicy + preprocessor/postprocessor -> (chunk, 16) numpy."""

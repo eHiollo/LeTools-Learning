@@ -194,8 +194,8 @@ class SimRgbCameraPublisher:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene", default=DEFAULT_SCENE)
-    # Match ACT / dataset IMAGE_SHAPE_CHW=(3,480,848)
-    parser.add_argument("--width", type=int, default=848)
+    # Default 640x480 matches typical MuJoCo offscreen FB; bridge resizes to ACT 848x480.
+    parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=float, default=15.0)
     args = parser.parse_args()

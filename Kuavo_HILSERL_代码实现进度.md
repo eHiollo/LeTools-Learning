@@ -458,11 +458,10 @@ PYTHONPATH=... python scripts/rl/verify_joint_map.py --live --out data/rl_runs/j
 
 ## 7. 当前结论
 
-Phase 0–1、阶段 A 离线链路与 **Kuavo-Sim ACT execute-first 闭环**已通：checkpoint `005000` 经 Docker 远程推理，主机 ROS 跑 10 步，`mode=kuavo_sim`，`last_fault=NONE`，chunk=(10,16)/discard=9。
+阶段 A（ACT Sim 闭环）与阶段 B（gaussian_actor+SAC）均已打通：mock smoke 与 **Kuavo-Sim ROS proxy**（`STAGEB_SIM_OK`，`kuavo_sac_sim_latest`）均已跑通；actor 单步 16-D，未混入 ACT chunk。
 
 下一风险点：
 
-1. 更长 episode / 行为质量与 rad/deg 现场确认；
-2. 影子模式与真机前 joint-map；
-3. Robometer-4B 与 actor/learner 同卡显存；
-4. 阶段 B SAC。
+1. 更长 Sim episode / 恢复 pretrained 视觉编码器（HF 可达时）；
+2. Robometer 与 SAC 同卡显存；
+3. 真机 joint-map / 影子模式放行。

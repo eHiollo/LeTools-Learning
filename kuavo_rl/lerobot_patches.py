@@ -19,10 +19,45 @@ def apply_hilserl_patches() -> None:
     if _APPLIED:
         return
     _patch_train_rl_null_dataset_validate()
+    _patch_logging_include_traceback()
     _patch_gym_hil_make_robot_env()
     _patch_kuavo_hilserl_env()
     _APPLIED = True
     _LOGGER.info("kuavo_rl lerobot HIL-SERL runtime patches applied")
+
+
+def _patch_logging_include_traceback() -> None:
+    """Upstream init_logging custom_format drops exc_info; keep stack traces in actor logs."""
+    from lerobot.utils import utils as lerobot_utils
+
+    original = lerobot_utils.init_logging
+
+    def init_logging(*args, **kwargs):  # type: ignore[no-untyped-def]
+        original(*args, **kwargs)
+        import logging
+
+        root = logging.getLogger()
+        for handler in root.handlers:
+            fmt = handler.formatter
+            if fmt is None or not callable(getattr(fmt, "format", None)):
+                continue
+            inner = fmt.format
+
+            def format_with_exc(record: logging.LogRecord, _inner=inner) -> str:  # type: ignore[no-untyped-def]
+                msg = _inner(record)
+                if record.exc_info:
+                    import traceback
+
+                    # record.exc_info may already be formatted into record.exc_text by Formatter
+                    if not getattr(record, "exc_text", None):
+                        record.exc_text = "".join(traceback.format_exception(*record.exc_info))
+                    if record.exc_text and record.exc_text not in msg:
+                        msg = f"{msg}\n{record.exc_text}"
+                return msg
+
+            fmt.format = format_with_exc  # type: ignore[method-assign]
+
+    lerobot_utils.init_logging = init_logging  # type: ignore[assignment]
 
 
 def _patch_train_rl_null_dataset_validate() -> None:
@@ -146,6 +181,7 @@ def _make_kuavo_hilserl_env(cfg):  # type: ignore[no-untyped-def]
 
     backend_mode = os.environ.get("KUAVO_HILSERL_BACKEND", "mock").lower()
     kuavo_gym_env = None
+    backend = None
     if backend_mode == "ros":
         import gymnasium as gym
         import kuavo_deploy.kuavo_env  # noqa: F401
@@ -161,9 +197,18 @@ def _make_kuavo_hilserl_env(cfg):  # type: ignore[no-untyped-def]
             max_episode_steps=int(deploy_cfg.inference.max_episode_steps),
             config=deploy_cfg,
         )
+    elif backend_mode == "proxy":
+        from kuavo_rl.backend import ProxyBackend
+
+        backend = ProxyBackend(
+            host=os.environ.get("KUAVO_ROS_BRIDGE_HOST", "127.0.0.1"),
+            port=int(os.environ.get("KUAVO_ROS_BRIDGE_PORT", "8877")),
+            image_shape_chw=image_shape,
+        )
 
     env = make_kuavo_hilserl_env(
         env_cfg,
+        backend=backend,
         kuavo_gym_env=kuavo_gym_env,
         use_stub_robometer=True,
     )
