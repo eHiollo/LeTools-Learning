@@ -1,0 +1,25 @@
+env:
+  type: kuavo_hilserl
+  fps: 10
+  task: box_to_chest_mvp
+  shadow_mode: true
+  arm_publish_unit: rad_to_sdk
+  safety:
+    observation_max_age_s: 0.15
+    max_consecutive_clips: 3
+    control_dt_s: 0.1
+    joint_position_low: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, 0.0, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, 0.0]
+    joint_position_high: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 1.0, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 1.0]
+    max_delta_rad: [0.664, 0.256, 0.424, 0.256, 0.424, 0.424, 0.424, 1.0, 0.664, 0.256, 0.424, 0.256, 0.424, 0.424, 0.424, 1.0]
+  episode:
+    max_steps: 75
+    max_duration_s: 15
+  reward:
+    use_robometer: false
+    robometer_mode: disabled
+policy:
+  type: gaussian_actor
+  device: cuda
+algorithm:
+  type: sac
+notes: "Shadow mode: full policy + safety, NEVER publish policy actions."

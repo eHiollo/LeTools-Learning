@@ -1,0 +1,19 @@
+# Stage-A ACT baseline (chunk=10, execute first step only)
+policy:
+  type: act
+  chunk_size: 10
+  n_action_steps: 1
+  device: cuda
+dataset:
+  repo_id: lerobot_merged
+  root: data/lerobot/lerobot_merged
+env:
+  fps: 10
+  task: box_to_chest_mvp
+act_runner:
+  chunk_size: 10
+  execute_steps: 1
+  fps: 10
+notes: >
+  ACT chunk must NOT be written into SAC replay.
+  Use kuavo_rl.act_runner.ActExecuteFirstRunner for closed-loop eval.

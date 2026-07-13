@@ -1,0 +1,35 @@
+{
+  "output_dir": null,
+  "job_name": "act_stage_a_smoke",
+  "resume": false,
+  "seed": 1000,
+  "num_workers": 0,
+  "batch_size": 2,
+  "steps": 20,
+  "env_eval_freq": 0,
+  "log_freq": 1,
+  "save_checkpoint": true,
+  "save_freq": 20,
+  "wandb": {
+    "enable": false,
+    "project": "kuavo-hilserl",
+    "disable_artifact": true
+  },
+  "dataset": {
+    "repo_id": "lerobot_merged",
+    "root": "data/lerobot/lerobot_merged",
+    "use_imagenet_stats": true,
+    "video_backend": "pyav"
+  },
+  "policy": {
+    "type": "act",
+    "device": "cuda",
+    "use_amp": false,
+    "push_to_hub": false,
+    "repo_id": null,
+    "chunk_size": 10,
+    "n_action_steps": 1,
+    "vision_backbone": "resnet18",
+    "pretrained_backbone_weights": "ResNet18_Weights.IMAGENET1K_V1"
+  }
+}

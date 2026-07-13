@@ -1,0 +1,14 @@
+robot: "Kuavo 5W v62"
+raw_state_dim: 28
+arm_slice: [12, 26]
+layout_rule: "28->12:26, 20->4:18, 14->0:14"
+action_dim: 16
+action_order: "L7,left_claw,R7,right_claw"
+state_unit: rad
+claw_norm: "[0,1]"
+claw_command_scale: 100.0
+sdk_arm_unit_assumption: rad
+note: >
+  Do not use configs/platform/platform_config.yaml 5w=[4:18] for 28-D v62.
+  Field preflight via scripts/rl/verify_joint_map.py is mandatory before real policy publish.
+verified_on_robot: false

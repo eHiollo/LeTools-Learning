@@ -1,0 +1,44 @@
+env:
+  type: kuavo_hilserl
+  fps: 5
+  task: box_to_chest_mvp
+  shadow_mode: false
+  arm_publish_unit: rad_to_sdk
+  safety:
+    observation_max_age_s: 0.15
+    max_consecutive_clips: 3
+    control_dt_s: 0.2
+    joint_position_low: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, 0.0, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, 0.0]
+    joint_position_high: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 1.0, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 1.0]
+    max_delta_rad: [1.328, 0.512, 0.848, 0.512, 0.848, 0.848, 0.848, 1.0, 1.328, 0.512, 0.848, 0.512, 0.848, 0.848, 0.848, 1.0]
+  episode:
+    max_steps: 75
+    max_duration_s: 15
+  reward:
+    task_text: "将物料框搬运到胸前的目标位置"
+    use_robometer: true
+    robometer_mode: episode_end
+policy:
+  type: gaussian_actor
+  device: cuda
+  storage_device: cuda
+  online_step_before_learning: 200
+  online_buffer_capacity: 20000
+  offline_buffer_capacity: 20000
+  actor_learner_config:
+    learner_host: 127.0.0.1
+    learner_port: 50051
+    policy_parameters_push_frequency: 2
+algorithm:
+  type: sac
+  temperature_init: 0.01
+  utd_ratio: 1
+dataset:
+  repo_id: lerobot_merged
+  root: data/lerobot/lerobot_merged
+online_ratio: 0.5
+wandb:
+  enable: false
+notes: >
+  Real MVP only after Phase 6 shadow gates.
+  Stage-B uses single-step gaussian_actor+sac; never write ACT chunks into replay.

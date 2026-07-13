@@ -1,0 +1,15 @@
+{
+  "env": {
+    "type": "gym_manipulator",
+    "name": "gym_hil",
+    "task": "PandaPickCubeKeyboard-v0",
+    "fps": 10
+  },
+  "policy": {
+    "type": "gaussian_actor",
+    "device": "cuda"
+  },
+  "algorithm": {
+    "type": "sac"
+  }
+}

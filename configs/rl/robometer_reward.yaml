@@ -1,0 +1,14 @@
+reward:
+  type: robometer
+  model_id: lerobot/Robometer-4B
+  task_text: "将物料框搬运到胸前的目标位置"
+  mode: episode_end  # episode_end | offline | disabled
+  async_timeout_s: 30
+  allow_dense_progress: false
+  dense_progress_hz: 1.0
+calibration_gates:
+  spearman_progress_min: 0.7
+  success_auc_min: 0.85
+notes: >
+  Do not run Robometer inside the 10 Hz control loop.
+  Prefer offline score_rollouts_robometer.py before enabling online mode.
