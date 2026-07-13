@@ -1,0 +1,148 @@
+{
+  "output_dir": null,
+  "job_name": "kuavo_sac_smoke",
+  "resume": false,
+  "seed": 1000,
+  "num_workers": 0,
+  "batch_size": 16,
+  "steps": 200,
+  "env_eval_freq": 0,
+  "log_freq": 1,
+  "save_checkpoint": false,
+  "save_freq": 100000,
+  "wandb": {
+    "enable": false,
+    "project": "kuavo-hilserl",
+    "disable_artifact": true
+  },
+  "dataset": null,
+  "algorithm": {
+    "type": "sac",
+    "actor_lr": 3e-4,
+    "critic_lr": 3e-4,
+    "temperature_lr": 3e-4,
+    "discount": 0.97,
+    "use_backup_entropy": true,
+    "critic_target_update_weight": 0.005,
+    "num_critics": 2,
+    "temperature_init": 0.01,
+    "utd_ratio": 1,
+    "policy_update_freq": 1,
+    "grad_clip_norm": 10.0,
+    "use_torch_compile": false
+  },
+  "mixer": "online_offline",
+  "online_ratio": 1.0,
+  "policy": {
+    "type": "gaussian_actor",
+    "push_to_hub": false,
+    "n_obs_steps": 1,
+    "normalization_mapping": {
+      "VISUAL": "MEAN_STD",
+      "STATE": "MIN_MAX",
+      "ENV": "MIN_MAX",
+      "ACTION": "MIN_MAX"
+    },
+    "input_features": {
+      "observation.images.head_cam_h": {"type": "VISUAL", "shape": [3, 128, 128]},
+      "observation.images.wrist_cam_l": {"type": "VISUAL", "shape": [3, 128, 128]},
+      "observation.images.wrist_cam_r": {"type": "VISUAL", "shape": [3, 128, 128]},
+      "observation.state": {"type": "STATE", "shape": [16]}
+    },
+    "output_features": {
+      "action": {"type": "ACTION", "shape": [16]}
+    },
+    "dataset_stats": {
+      "observation.images.head_cam_h": {
+        "mean": [0.485, 0.456, 0.406],
+        "std": [0.229, 0.224, 0.225]
+      },
+      "observation.images.wrist_cam_l": {
+        "mean": [0.485, 0.456, 0.406],
+        "std": [0.229, 0.224, 0.225]
+      },
+      "observation.images.wrist_cam_r": {
+        "mean": [0.485, 0.456, 0.406],
+        "std": [0.229, 0.224, 0.225]
+      },
+      "observation.state": {
+        "min": [-1.1, -0.3, -0.84, -2.21, -1.59, -1.09, -0.08, 0.0, -1.27, -0.75, -0.49, -2.65, -1.45, -0.69, -0.5, 0.0],
+        "max": [0.61, 0.2, 0.51, -0.07, 0.79, 0.59, 0.72, 1.0, 0.6, 0.28, 1.56, 0.01, 1.57, 0.85, 0.85, 1.0]
+      },
+      "action": {
+        "min": [-1.11, -0.19, -0.95, -2.47, -1.58, -1.13, -0.08, 0.0, -1.28, -0.98, -0.46, -2.62, -1.47, -0.7, -0.47, 0.0],
+        "max": [0.6, 0.18, 0.46, -0.07, 0.79, 0.56, 0.7, 1.0, 0.6, 0.3, 1.58, 0.05, 1.58, 1.03, 0.7, 1.0]
+      }
+    },
+    "num_discrete_actions": null,
+    "storage_device": "cuda",
+    "vision_encoder_name": "lerobot/resnet10",
+    "freeze_vision_encoder": true,
+    "image_encoder_hidden_dim": 32,
+    "shared_encoder": true,
+    "online_steps": 40,
+    "online_buffer_capacity": 2000,
+    "offline_buffer_capacity": 100,
+    "online_step_before_learning": 8,
+    "state_encoder_hidden_dim": 256,
+    "latent_dim": 64,
+    "device": "cuda",
+    "use_amp": false,
+    "actor_network_kwargs": {
+      "hidden_dims": [256, 256],
+      "activate_final": true
+    },
+    "policy_kwargs": {
+      "use_tanh_squash": true,
+      "std_min": 1e-5,
+      "std_max": 5,
+      "init_final": 0.05
+    },
+    "actor_learner_config": {
+      "learner_host": "127.0.0.1",
+      "learner_port": 50051,
+      "policy_parameters_push_frequency": 2
+    },
+    "concurrency": {
+      "actor": "threads",
+      "learner": "threads"
+    },
+    "repo_id": null
+  },
+  "env": {
+    "type": "gym_manipulator",
+    "name": "kuavo_hilserl",
+    "task": "box_to_chest_mvp",
+    "fps": 10,
+    "robot": null,
+    "teleop": null,
+    "processor": {
+      "control_mode": "keyboard",
+      "gripper": {
+        "use_gripper": false,
+        "gripper_penalty": 0.0
+      },
+      "reset": {
+        "fixed_reset_joint_positions": null,
+        "reset_time_s": 0.1,
+        "control_time_s": 2.0,
+        "terminate_on_success": false
+      },
+      "image_preprocessing": null
+    },
+    "features": {
+      "observation.images.head_cam_h": {"type": "VISUAL", "shape": [3, 128, 128]},
+      "observation.images.wrist_cam_l": {"type": "VISUAL", "shape": [3, 128, 128]},
+      "observation.images.wrist_cam_r": {"type": "VISUAL", "shape": [3, 128, 128]},
+      "observation.state": {"type": "STATE", "shape": [16]},
+      "action": {"type": "ACTION", "shape": [16]}
+    },
+    "features_map": {
+      "observation.images.head_cam_h": "observation.images.head_cam_h",
+      "observation.images.wrist_cam_l": "observation.images.wrist_cam_l",
+      "observation.images.wrist_cam_r": "observation.images.wrist_cam_r",
+      "observation.state": "observation.state",
+      "action": "action"
+    }
+  }
+}

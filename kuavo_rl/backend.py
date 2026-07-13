@@ -62,11 +62,18 @@ class RobotBackend(ABC):
 class MockBackend(RobotBackend):
     """Deterministic in-memory backend for unit tests (no ROS)."""
 
-    def __init__(self, *, raw_joint_dim: int = 28, image_chw: bool = True):
+    def __init__(
+        self,
+        *,
+        raw_joint_dim: int = 28,
+        image_chw: bool = True,
+        image_shape_chw: tuple[int, int, int] | None = None,
+    ):
         from kuavo_rl.contracts import STATE_DIM
 
         self.raw_joint_dim = raw_joint_dim
         self.image_chw = image_chw
+        self.image_shape_chw = image_shape_chw or IMAGE_SHAPE_CHW
         self._state = np.zeros(STATE_DIM, dtype=np.float32)
         self._stop = False
         self._pause = False
@@ -103,7 +110,7 @@ class MockBackend(RobotBackend):
         return self.get_observation()
 
     def get_observation(self) -> BackendObservation:
-        c, h, w = IMAGE_SHAPE_CHW
+        c, h, w = self.image_shape_chw
         images = {}
         for key in IMAGE_KEYS:
             if self.image_chw:

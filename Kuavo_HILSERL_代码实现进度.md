@@ -369,6 +369,26 @@ PYTHONPATH=... python scripts/rl/verify_joint_map.py --live --out data/rl_runs/j
 
 **下一步**：Stage B SAC / 真机前再验 28-D joint-map
 
+### 2026-07-13 — Stage B SAC mock smoke（gaussian_actor）
+
+**结果**
+
+| 项 | 值 |
+|---|---|
+| 状态 | OK |
+| 环境 | `KuavoHILSerlEnv` + `MockBackend`（`name=kuavo_hilserl`） |
+| 策略/算法 | `gaussian_actor` + `sac`（单步 16-D，无 ACT chunk） |
+| 启动 | `bash scripts/rl/run_kuavo_sac_smoke.sh` |
+| 产物 | `data/rl_runs/kuavo_sac_smoke_latest/manifest.json` |
+
+**新增**
+
+- `kuavo_rl/hilserl_processors.py` + `lerobot_patches` 路由 `kuavo_hilserl`
+- `configs/rl/kuavo_sac_smoke.json`（128×128 三相机 smoke）
+- Mock 支持可配置 `image_shape_chw`
+
+**下一步**：Kuavo-Sim 上接 ROS backend 的 Stage B；对照 ACT 基线
+
 ---
 
 ## 4. 验收检查表（代码侧）
@@ -403,13 +423,14 @@ PYTHONPATH=... python scripts/rl/verify_joint_map.py --live --out data/rl_runs/j
 
 - [x] Kuavo-Sim `--kuavo-env` smoke（`mode=kuavo_sim`）
 - [x] ACT runner 接真 checkpoint `005000` 跑仿真 episode（Docker 远程推理 + 主机 ROS）
-- [ ] 阶段 B gaussian_actor+SAC（须阶段 A Sim 基线先过）
+- [x] 阶段 B gaussian_actor+SAC **mock** smoke（learner+actor，单步 16-D）
+- [ ] 阶段 B 接 Kuavo-Sim ROS backend
 
 ---
 
 ## 5. 下一步建议（按优先级）
 
-1. **Stage B**：gaussian_actor + SAC（Sim 基线已具备）。
+1. **Stage B 接 Kuavo-Sim ROS**（`KUAVO_HILSERL_BACKEND=ros`），对照 ACT 基线。
 2. **真机前**：在实机再跑 `verify_joint_map.py --live`（确认 28-D/`[12:26]` 或现场实际维度）。
 3. **Robometer**：显存预算通过后再换真模型。
 

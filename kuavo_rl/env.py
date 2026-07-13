@@ -12,7 +12,7 @@ from gymnasium import spaces
 
 from kuavo_rl.backend import MockBackend, RobotBackend
 from kuavo_rl.config import EnvConfig, default_safety_config
-from kuavo_rl.contracts import ACTION_DIM, IMAGE_KEYS, IMAGE_SHAPE_CHW, STATE_DIM, FaultCode
+from kuavo_rl.contracts import ACTION_DIM, IMAGE_KEYS, STATE_DIM, FaultCode
 from kuavo_rl.reward import DeterministicRewardProvider, EpisodeFrame, RobometerRewardWorker
 from kuavo_rl.ros_adapter import action_to_audit_dict, build_published_command, observation_contract_check
 from kuavo_rl.safety import SafetyGate
@@ -32,7 +32,9 @@ class KuavoHILSerlEnv(gym.Env):
         super().__init__()
         self.config = config or EnvConfig(safety=default_safety_config())
         assert self.config.safety is not None
-        self.backend = backend or MockBackend()
+        if backend is None:
+            backend = MockBackend(image_shape_chw=self.config.image_shape_chw)
+        self.backend = backend
         self.teleop = teleop or TeleopAdapter()
         self.gate = SafetyGate(self.config.safety)
         self.det_reward = DeterministicRewardProvider(
@@ -49,10 +51,11 @@ class KuavoHILSerlEnv(gym.Env):
             high=self.config.safety.joint_position_high,
             dtype=np.float32,
         )
+        c, h, w = self.config.image_shape_chw
         image_space = spaces.Box(
             low=0,
             high=255,
-            shape=IMAGE_SHAPE_CHW,
+            shape=(c, h, w),
             dtype=np.uint8,
         )
         self.observation_space = spaces.Dict(
@@ -60,7 +63,7 @@ class KuavoHILSerlEnv(gym.Env):
                 "observation.state": spaces.Box(
                     low=-np.pi, high=np.pi, shape=(STATE_DIM,), dtype=np.float32
                 ),
-                **{k: image_space for k in IMAGE_KEYS},
+                **{k: image_space for k in self.config.image_keys},
             }
         )
 

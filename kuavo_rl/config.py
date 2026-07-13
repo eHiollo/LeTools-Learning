@@ -169,6 +169,7 @@ def build_env_config_from_dict(raw: dict[str, Any]) -> EnvConfig:
         task=str(env_raw.get("task", "box_to_chest_mvp")),
         shadow_mode=bool(env_raw.get("shadow_mode", False)),
         arm_publish_unit=str(env_raw.get("arm_publish_unit", "rad_to_sdk")),
+        image_shape_chw=tuple(env_raw.get("image_shape_chw", IMAGE_SHAPE_CHW)),  # type: ignore[arg-type]
         safety=safety,
         episode=EpisodeConfig(**{k: episode_raw[k] for k in episode_raw if k in EpisodeConfig.__dataclass_fields__}),
         reward=RewardConfig(**{k: reward_raw[k] for k in reward_raw if k in RewardConfig.__dataclass_fields__}),
