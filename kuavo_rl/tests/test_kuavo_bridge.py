@@ -42,6 +42,23 @@ def test_normalize_batched_torch_and_hwc():
     assert obs["observation.images.wrist_cam_r"].max() == 127 or obs["observation.images.wrist_cam_r"].max() == 128
 
 
+def test_normalize_resizes_non_contract_resolution():
+    raw = {
+        "observation.state": np.zeros(16, dtype=np.float32),
+        "observation.images.head_cam_h": np.zeros((3, 480, 640), dtype=np.uint8),
+        "observation.images.wrist_cam_l": np.zeros((480, 640, 3), dtype=np.uint8),
+        "observation.images.wrist_cam_r": np.ones((3, 240, 320), dtype=np.float32),
+    }
+    obs = normalize_kuavo_obs(raw)
+    for key in (
+        "observation.images.head_cam_h",
+        "observation.images.wrist_cam_l",
+        "observation.images.wrist_cam_r",
+    ):
+        assert obs[key].shape == (3, 480, 848)
+        assert obs[key].dtype == np.uint8
+
+
 def test_bridge_exec_action():
     env = FakeKuavoEnv()
     bridge = KuavoGymBridge(env)

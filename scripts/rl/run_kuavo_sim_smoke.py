@@ -32,6 +32,12 @@ def main() -> None:
         help="Try to construct Kuavo-Sim via gymnasium.make (needs ROS)",
     )
     parser.add_argument(
+        "--deploy-config",
+        type=Path,
+        default=Path("configs/deploy/total/deploy_sim_smoke_cams_total.yaml"),
+        help="kuavo_deploy YAML used when --kuavo-env (must set inference_env=sim)",
+    )
+    parser.add_argument(
         "--manifest",
         type=Path,
         default=Path("data/rl_runs/kuavo_sim_smoke/manifest.json"),
@@ -49,8 +55,19 @@ def main() -> None:
         try:
             import gymnasium as gym
             import kuavo_deploy.kuavo_env  # noqa: F401  registers Kuavo-Sim
+            from kuavo_deploy.config import load_kuavo_config
 
-            kuavo_gym_env = gym.make("Kuavo-Sim")
+            deploy_cfg = load_kuavo_config(str(args.deploy_config))
+            if deploy_cfg.env.env_name != "Kuavo-Sim":
+                raise RuntimeError(
+                    f"deploy config env_name={deploy_cfg.env.env_name!r}; expected Kuavo-Sim "
+                    f"(set inference_env: sim in {args.deploy_config})"
+                )
+            kuavo_gym_env = gym.make(
+                deploy_cfg.env.env_name,
+                max_episode_steps=int(deploy_cfg.inference.max_episode_steps),
+                config=deploy_cfg,
+            )
             mode = "kuavo_sim"
         except Exception as exc:  # noqa: BLE001
             print(f"[warn] failed to make Kuavo-Sim ({exc}); falling back to MockBackend")

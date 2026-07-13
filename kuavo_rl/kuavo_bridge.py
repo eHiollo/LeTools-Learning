@@ -53,6 +53,18 @@ def normalize_kuavo_obs(raw_obs: dict) -> dict:
         if img.ndim == 3 and img.shape[-1] == 3:
             # HWC -> CHW
             img = np.transpose(img, (2, 0, 1))
+        c, h, w = IMAGE_SHAPE_CHW
+        if img.shape != (c, h, w):
+            # Match ACT / dataset contract (3, 480, 848); sim RGB may publish 640x480.
+            import cv2
+
+            hwc = np.transpose(img, (1, 2, 0))
+            if hwc.dtype != np.uint8:
+                if float(np.max(hwc)) <= 1.0:
+                    hwc = (hwc * 255.0).clip(0, 255)
+                hwc = hwc.astype(np.uint8)
+            hwc = cv2.resize(hwc, (w, h), interpolation=cv2.INTER_AREA)
+            img = np.transpose(hwc, (2, 0, 1))
         if img.dtype != np.uint8:
             # deploy may return float tensor in [0,1] or [0,255]
             if img.max() <= 1.0:
@@ -67,6 +79,20 @@ def normalize_kuavo_obs(raw_obs: dict) -> dict:
     return out
 
 
+def _unwrap_kuavo_env(kuavo_env: Any) -> Any:
+    """gym.make() wraps with TimeLimit/OrderEnforcing; Kuavo APIs live on .unwrapped."""
+    env = kuavo_env
+    seen: set[int] = set()
+    while True:
+        if hasattr(env, "get_obs") and hasattr(env, "exec_action"):
+            return env
+        nxt = getattr(env, "unwrapped", None)
+        if nxt is None or nxt is env or id(nxt) in seen:
+            return env
+        seen.add(id(env))
+        env = nxt
+
+
 class KuavoGymBridge:
     """
     Thin wrapper around an existing Kuavo Gym env instance.
@@ -75,14 +101,16 @@ class KuavoGymBridge:
     """
 
     def __init__(self, kuavo_env: Any):
-        self.env = kuavo_env
+        self.env = _unwrap_kuavo_env(kuavo_env)
+        self.wrapped_env = kuavo_env
 
     def reset(self, *, seed: int | None = None) -> dict:
-        # Kuavo reset signature may ignore seed
+        # Prefer outer wrapper reset (respects TimeLimit); fall back to unwrapped.
+        target = self.wrapped_env if hasattr(self.wrapped_env, "reset") else self.env
         try:
-            obs, info = self.env.reset(seed=seed)
+            obs, info = target.reset(seed=seed)
         except TypeError:
-            obs, info = self.env.reset()
+            obs, info = target.reset()
         return normalize_kuavo_obs(obs)
 
     def get_obs(self) -> dict:

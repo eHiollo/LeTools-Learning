@@ -205,6 +205,7 @@ PYTHONPATH=. python scripts/rl/run_kuavo_sim_smoke.py --steps 10 --shadow
 |---|---|---|---|
 | P12 | `eval_freq` 字段已改名；`dataset=null` 触发 `TrainPipelineConfig.validate` AttributeError | learner/actor 起不来 | 配置改用 `env_eval_freq`；**运行时 patch** `TrainRLServerPipelineConfig.validate`（不改 submodule） |
 | P18 | 曾直接改 `third_party/lerobot`（train_rl / gym_manipulator） | 违反 D1 | 已 `git checkout` 回退；逻辑迁至 `kuavo_rl/lerobot_patches.py` |
+| P19 | Kuavo-Sim 工作空间 devel 指向 `/root/kuavo_ws`；宿主机直接 launch 缺 OpenVINO/LCM；默认 mujoco 无相机 publisher | 阻塞真实 sim smoke | 已解决：软链 `/root/kuavo_ws`→本机 workspace；**在 `./docker/run.sh` 容器内用 `setup.zsh` 启动**；smoke 用 joint-only 配置（见下） |
 | P13 | actor/learner 共用同一 `output_dir` 时第二进程 `FileExistsError` | 官方同配置双进程在本仓库 validate 下冲突 | smoke 脚本给 actor 独立 `--output_dir` |
 | P14 | `mujoco.Renderer` 缺失 / EGL 无 PLATFORM_DEVICE；`mujoco 3.10` 与 gym-hil/`mj_fullM` 不兼容 | env.reset/step 失败 | pin `mujoco<3.9`（3.8.1）+ PyOpenGL；默认 `osmesa`（D13） |
 | P15 | Keyboard/Gamepad 需要 X11+pynput；`Base-v0` 直接 `gym.make(..., use_gripper=...)` 参数非法 | Docker 无显示器无法走人机路径 | headless 走 `gym_hil.factory` + `use_inputs_control=False`；有显示器时仍可用 Keyboard |
@@ -232,6 +233,142 @@ cat data/rl_runs/gym_hil_smoke_latest/manifest.json
 
 **脚本**：`scripts/rl/run_gym_hil_display.sh`（去掉 `-t`，避免 heredoc TTY 报错；键盘走 X11/pynput）
 
+### 2026-07-13 — Kuavo-Sim 真实闭环 smoke（关节，无相机）
+
+**前置**
+
+1. `sudo ln -s /home/fulin/VSCode/kuavo-ros-control /root/kuavo_ws`（devel 仍指向该路径）
+2. 容器：`cd /home/fulin/VSCode/kuavo-ros-control && ./docker/run.sh`
+3. 容器内（zsh）：`source /opt/ros/noetic/setup.zsh && source /root/kuavo_ws/devel/setup.zsh && roslaunch humanoid_controllers load_kuavo_mujoco_sim.launch`
+4. 宿主机 `data` 环境：`numpy==1.26.4`（兼容 ROS `cv_bridge`）、`PYTHONPATH` 含 `kuavo_humanoid_sdk` + apriltag python 路径
+
+**做了什么**
+
+1. 修复 `scripts/rl/run_kuavo_sim_smoke.py`：正确 `load_kuavo_config` + `gym.make(..., config=)`
+2. 新增 `configs/deploy/total/deploy_sim_smoke_total.yaml`（仅 `joint_q`/`leju_claw`；默认 mujoco 无 `/cam_*` publisher）
+3. 新增 `scripts/rl/run_kuavo_sim_smoke.sh`
+4. 修复 `kuavo_rl/kuavo_bridge.py`：unwrap `gym.make` 包装层以调用 `get_obs`/`exec_action`
+
+**结果**
+
+| 项 | 值 |
+|---|---|
+| 状态 | OK |
+| `mode` | `kuavo_sim`（非 mock_fallback） |
+| steps | 5 |
+| `last_fault` | `NONE` |
+| `discarded_per_step` | 9（ACT execute-first） |
+| 产物 | `data/rl_runs/kuavo_sim_smoke/manifest.json` |
+
+**复验**
+
+```bash
+# 容器内仿真已启动后，宿主机：
+bash scripts/rl/run_kuavo_sim_smoke.sh 10
+cat data/rl_runs/kuavo_sim_smoke/manifest.json  # mode=kuavo_sim
+```
+
+**未完成 / 下一步**
+
+- 默认 mujoco launch **无原生 RGB**；已加 s62 模型相机 + `scripts/rl/run_sim_rgb_cameras.sh` 影子渲染发布 `/cam_*`
+- 仿真必须用 **`robot_version:=62`**（当前若仍是 42 需重启）
+- 下一步：接 ACT `005000` 做带相机的 sim execute-first 评测
+
+### 2026-07-13 — s62 + RGB 相机接入
+
+**事实**
+
+- 官方 `run_mujoco_camera:=true` 只开腰部 **depth**（RayCaster），不出 `/cam_h|/cam_l|/cam_r` RGB。
+- 已在 `biped_s62.xml` 增加 `cam_h` / `cam_l` / `cam_r` / `waist_camera`。
+- 新增宿主机 RGB 发布：`bash scripts/rl/run_sim_rgb_cameras.sh`（跟 `/sensors_data_raw` 同步渲染）。
+
+**你需要做的（重启仿真）**
+
+容器内 Ctrl+C 停掉当前 launch，然后：
+
+```zsh
+export ROBOT_VERSION=62
+source /opt/ros/noetic/setup.zsh
+source /root/kuavo_ws/devel/setup.zsh
+# 或: bash /root/kuavo_ws/start_kuavo_sim_v62_with_cameras.sh
+roslaunch humanoid_controllers load_kuavo_mujoco_sim.launch \
+  robot_version:=62 run_mujoco_camera:=true joystick_type:=sim
+```
+
+宿主机另开终端：
+
+```bash
+bash scripts/rl/run_sim_rgb_cameras.sh
+# 验收：rostopic hz /cam_h/color/image_raw/compressed
+bash scripts/rl/run_kuavo_sim_smoke.sh 5
+```
+
+### 2026-07-13 — ACT `005000` Kuavo-Sim execute-first 闭环
+
+**架构**（宿主机 Py3.10 无法 import 仓库 lerobot 0.6.1）：
+
+| 端 | 角色 |
+|---|---|
+| Docker `letools-train:hilserl` | ACT 推理 TCP 服务（pre/post + `predict_action_chunk`） |
+| 宿主机 `data` + ROS | `Kuavo-Sim` + `ActExecuteFirstRunner` 远程策略 |
+
+**命令**
+
+```bash
+# 已起 v62 轮臂仿真 + RGB 后：
+bash scripts/rl/run_act_infer_server.sh          # Docker :8765
+bash scripts/rl/run_act_kuavo_sim_eval.sh 10     # 主机闭环
+cat data/rl_runs/act_kuavo_sim_eval/manifest.json
+```
+
+**结果**
+
+| 项 | 值 |
+|---|---|
+| 状态 | OK |
+| `mode` | `kuavo_sim` |
+| `policy` | `remote` |
+| chunk | `(10, 16)`，discard=9 |
+| steps | 10 |
+| `last_fault` | `NONE` |
+| 产物 | `data/rl_runs/act_kuavo_sim_eval/manifest.json` |
+
+**新增/改动**
+
+- `kuavo_rl/act_policy.py`：本地/远程 ACT 适配；图像 float[0,1]；跨 NumPy 版本字节打包
+- `scripts/rl/act_infer_server.py` + `run_act_infer_server.sh`
+- `scripts/rl/run_act_kuavo_sim_eval.sh`；`eval_act_execute_first.py` 支持 `--policy remote` + deploy config
+- bridge 将相机 resize 到 `848×480`；RGB 发布默认改为 848×480
+- `configs/rl/kuavo_hilserl_sim_act.yaml`（放宽 consecutive clips）
+
+**下一步**
+
+- 更长 episode / 影子模式；关节 map live 校验；Stage B SAC
+
+### 2026-07-13 — 长 episode + 影子模式 + joint-map live
+
+**结果**
+
+| 项 | 值 |
+|---|---|
+| 长闭环 | 50 步，`last_fault=NONE`，`data/rl_runs/act_kuavo_sim_eval_long/manifest.json` |
+| 影子模式 | `SHADOW=1` 20 步，`shadow_mode=true`，不下发动作，`act_kuavo_sim_shadow/manifest.json` |
+| joint-map live | `ok=true`，当前仿真 `raw_joint_dim=20` → 切片 `[4:18]`；夹爪可读；`joint_map_live/manifest.json` |
+
+**注意**：轮臂仿真传感器为 **20-D**（非 biped 28-D/`[12:26]`）。deploy/obs 路径已按表切片；真机仍须再跑 `--live` 确认维度。
+
+**用法**
+
+```bash
+bash scripts/rl/run_act_infer_server.sh
+MANIFEST=data/rl_runs/act_kuavo_sim_eval_long/manifest.json bash scripts/rl/run_act_kuavo_sim_eval.sh 50
+SHADOW=1 bash scripts/rl/run_act_kuavo_sim_eval.sh 20
+# ROS 已 source：
+PYTHONPATH=... python scripts/rl/verify_joint_map.py --live --out data/rl_runs/joint_map_live/manifest.json
+```
+
+**下一步**：Stage B SAC / 真机前再验 28-D joint-map
+
 ---
 
 ## 4. 验收检查表（代码侧）
@@ -244,7 +381,7 @@ cat data/rl_runs/gym_hil_smoke_latest/manifest.json
 - [x] episode：success / timeout / safety fault 边界
 - [x] ACT「预测 chunk、只执行第 1 步」单测
 - [x] Kuavo obs bridge（torch batch / HWC）单测
-- [ ] 接真实 Kuavo-Sim 连续 100 episode（需 ROS/仿真机）
+- [x] 接真实 Kuavo-Sim smoke（关节闭环，`mode=kuavo_sim`）；带相机 / 100 episode / v62 重启后复验仍待做
 
 ### Phase 0 / 1
 
@@ -258,21 +395,23 @@ cat data/rl_runs/gym_hil_smoke_latest/manifest.json
 
 - [x] dataset `info.json` 契约 preflight
 - [x] ACT 训练脚本就绪（`train_act_stage_a.sh` / `pack_act_stage_a_cloud.sh`）；**长训改云端**，本机仅 smoke 20 step 验证过
-- [ ] 云端 ACT 5k 训练完成并同步 checkpoint 回本机
-- [ ] ACT checkpoint + execute-first 评测（`eval_act_execute_first.py`）
+- [x] 云端 ACT 5k 训练完成并同步 checkpoint 回本机（`data/rl_runs/act_stage_a_latest` → `checkpoints/005000`）
+- [x] ACT checkpoint + execute-first 离线评测通过（chunk=(10,16)、discard=9、`execute_first_ok`）
 - [ ] Robometer 离线校准过门禁
+
+### Phase 5（仿真闭环）
+
+- [x] Kuavo-Sim `--kuavo-env` smoke（`mode=kuavo_sim`）
+- [x] ACT runner 接真 checkpoint `005000` 跑仿真 episode（Docker 远程推理 + 主机 ROS）
+- [ ] 阶段 B gaussian_actor+SAC（须阶段 A Sim 基线先过）
 
 ---
 
 ## 5. 下一步建议（按优先级）
 
-1. **云端阶段 A ACT 训练**（本机不跑长训）：打包后上云  
-   `bash scripts/rl/pack_act_stage_a_cloud.sh` → 上传 bundle → 云端  
-   `bash scripts/rl/train_act_stage_a.sh`（或 `USE_DOCKER=0`）  
-   训完把 `data/rl_runs/act_stage_a_*` 同步回本机，再 `eval_act_execute_first.py`。
-2. **ROS 仿真机**：本机起 Kuavo-Sim / roscore 后跑 `run_kuavo_sim_smoke.py --kuavo-env`。
-3. **真机前**：Jetson 上 live `verify_joint_map.py`，冻结 `verified_on_robot: true`。
-4. **Robometer**：5060 Ti 显存实测后再换真模型。
+1. **Stage B**：gaussian_actor + SAC（Sim 基线已具备）。
+2. **真机前**：在实机再跑 `verify_joint_map.py --live`（确认 28-D/`[12:26]` 或现场实际维度）。
+3. **Robometer**：显存预算通过后再换真模型。
 
 ---
 
@@ -289,7 +428,7 @@ cat data/rl_runs/gym_hil_smoke_latest/manifest.json
 | evdev 编译失败 | P9、D11 |
 | gym_hil / mujoco / glfw / osmesa | P10、P12–P15、D12–D13 |
 | outputs / rl_runs 权限 | P11、P17 |
-| dataset=null validate | P12、`train_rl.py` |
+| dataset=null validate | P12、P18、`kuavo_rl/lerobot_patches.py` |
 | actor/learner output_dir | P13、`run_gym_hil_smoke.sh` |
 | 速度限幅过严 | P7、`kuavo_rl/safety.py` |
 | 文件写反 | P8 |
@@ -298,11 +437,11 @@ cat data/rl_runs/gym_hil_smoke_latest/manifest.json
 
 ## 7. 当前结论
 
-Phase 0–1 已打通：headless 与 **有屏 Keyboard** 联跑均通过（display：`opt_steps=772`，2 episodes）。
+Phase 0–1、阶段 A 离线链路与 **Kuavo-Sim ACT execute-first 闭环**已通：checkpoint `005000` 经 Docker 远程推理，主机 ROS 跑 10 步，`mode=kuavo_sim`，`last_fault=NONE`，chunk=(10,16)/discard=9。
 
 下一风险点：
 
-1. 真实 ROS/Kuavo-Sim 接线与 rad/deg 现场确认；
-2. 阶段 A ACT 训练与 execute-first 评测；
+1. 更长 episode / 行为质量与 rad/deg 现场确认；
+2. 影子模式与真机前 joint-map；
 3. Robometer-4B 与 actor/learner 同卡显存；
-4. 真机 reset 吞吐量与 VR 接管。
+4. 阶段 B SAC。
