@@ -1,0 +1,42 @@
+dataset:
+  repo_id: "lerobot_pada_v1_3_sample16_a10"
+  root: "/workspace/LeTools-Learning/data/lerobot/lerobot_pada_v1_3_sample16_a10"
+  episodes: null
+  use_imagenet_stats: true
+  video_backend: pyav
+
+training:
+  output_dir: "outputs/train/diffusion"
+  job_name: "diffusion_cloud"
+  resume: false
+  seed: 1000
+  num_workers: 8
+  batch_size: 32
+  prefetch_factor: 4
+  persistent_workers: true
+  steps: 100000
+  eval_freq: 20000
+  log_freq: 200
+  save_checkpoint: true
+  save_freq: 20000
+
+eval:
+  n_episodes: 50
+  batch_size: 0
+
+wandb:
+  enable: false
+
+policy:
+  type: "diffusion"
+  device: "cuda"
+  use_amp: false
+  push_to_hub: false
+  repo_id: null
+  n_obs_steps: 2
+  horizon: 16
+  n_action_steps: 8
+  num_train_timesteps: 10
+  num_inference_steps: 10
+  drop_n_last_frames: 7
+  pretrained_path: null

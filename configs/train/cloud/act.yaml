@@ -1,0 +1,4 @@
+# 云端 ACT 完整训练简化覆盖
+training:
+  batch_size: 32
+  num_workers: 8
