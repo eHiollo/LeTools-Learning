@@ -6,7 +6,6 @@ env:
   arm_publish_unit: rad_to_sdk
   claw_command_scale: 100.0
   safety:
-    # ACT absolute targets from home often soft-clip for several steps; allow more than smoke.
     observation_max_age_s: 0.25
     max_consecutive_clips: 30
     control_dt_s: 0.1
@@ -14,17 +13,14 @@ env:
     joint_position_high: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 1.0, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 1.0]
     max_delta_rad: [0.664, 0.256, 0.424, 0.256, 0.424, 0.424, 0.424, 1.0, 0.664, 0.256, 0.424, 0.256, 0.424, 0.424, 0.424, 1.0]
   episode:
-    # Keep the simulation episode alive for VR takeover/release validation.
-    # The command-line --steps value can still stop it earlier.
-    max_steps: 6000
-    max_duration_s: 600
+    max_steps: 75
+    max_duration_s: 15
   reward:
     task_text: "将物料框搬运到胸前的目标位置"
     use_robometer: false
-    robometer_mode: episode_end
+    robometer_mode: disabled
 policy:
-  type: act
-  device: remote
+  type: contrast
 algorithm:
-  type: bc
-notes: "ACT Stage-A sim eval. Prefer remote infer (Docker) + host ROS. Soft velocity clips expected."
+  type: contrast
+notes: "Phase-5 contrast: zero / random / ACT execute-first / SAC explore proxy. Deterministic reward only."

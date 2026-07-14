@@ -110,12 +110,34 @@ def main() -> None:
         action="store_true",
         help="Predict + safety only; never publish policy actions",
     )
+    parser.add_argument(
+        "--ros-teleop",
+        action="store_true",
+        help="Consume existing Quest3 IK output as human intervention (ROS required)",
+    )
+    parser.add_argument(
+        "--record-dir",
+        type=Path,
+        default=Path("data/rl_runs/hilserl_episodes"),
+        help="Write per-step HIL audit JSONL here for Kuavo runs.",
+    )
+    parser.add_argument(
+        "--record-experiment",
+        default="hilserl_vr",
+        help="Subdirectory name under --record-dir.",
+    )
     args = parser.parse_args()
 
     from kuavo_rl.act_runner import ActExecuteFirstRunner
     from kuavo_rl.adapter import make_kuavo_hilserl_env
     from kuavo_rl.config import ActRunnerConfig, build_env_config_from_dict, load_yaml
-    from kuavo_rl.recording import build_manifest, write_manifest
+    from kuavo_rl.recording import (
+        EpisodeRecorder,
+        HILReplayWriter,
+        TransitionRecord,
+        build_manifest,
+        write_manifest,
+    )
 
     policy, policy_id = _make_policy(args)
 
@@ -153,7 +175,17 @@ def main() -> None:
             print(f"[warn] Kuavo-Sim unavailable ({exc}); using mock")
             mode = "mock_fallback"
 
-    env = make_kuavo_hilserl_env(cfg, kuavo_gym_env=kuavo_gym_env, use_stub_robometer=True)
+    teleop = None
+    if args.ros_teleop:
+        from kuavo_rl.ros_teleop import RosTeleopAdapter, RosTeleopConfig
+
+        teleop_raw = raw.get("teleop", {}) if isinstance(raw, dict) else {}
+        allowed = {k: teleop_raw[k] for k in RosTeleopConfig.__dataclass_fields__ if k in teleop_raw}
+        teleop = RosTeleopAdapter(RosTeleopConfig(**allowed))
+        teleop.start()
+    env = make_kuavo_hilserl_env(
+        cfg, kuavo_gym_env=kuavo_gym_env, use_stub_robometer=True, teleop=teleop
+    )
     runner = ActExecuteFirstRunner(policy, ActRunnerConfig(chunk_size=10, execute_steps=1))
 
     summary = {
@@ -165,11 +197,63 @@ def main() -> None:
         "discarded_tail_len": int(chunk.shape[0] - 1),
         "execute_first_ok": True,
         "shadow_mode": bool(cfg.shadow_mode),
+        "ros_teleop": bool(args.ros_teleop),
     }
 
+    recorder = None
+    replay_writer = None
     if mode.startswith("kuavo"):
-        result = runner.run_episode(env, max_steps=args.steps)
+        recorder = EpisodeRecorder(args.record_dir, args.record_experiment)
+        replay_writer = HILReplayWriter(args.record_dir, args.record_experiment)
+
+        def record_step(step: dict) -> None:
+            info = step["info"]
+            audit = info.get("action_audit", {})
+            executed = step.get("executed_action") or audit.get("raw_action")
+            policy_action = np.asarray(step["policy_action"], dtype=np.float32).tolist()
+            transition = TransitionRecord(
+                experiment_id=args.record_experiment,
+                episode_id=str(info["episode_id"]),
+                step_id=int(step["step_id"]),
+                timestamp=float(info["timestamp"]),
+                action=list(executed) if executed is not None else policy_action,
+                reward=float(step["reward"]),
+                reward_source=str(info.get("reward_source", "unknown")),
+                terminated=bool(step["terminated"]),
+                truncated=bool(step["truncated"]),
+                fault_code=str(info.get("fault_code", "UNKNOWN")),
+                is_intervention=bool(info.get("is_intervention", False)),
+                action_clipped=bool(info.get("action_clipped", False)),
+                extras={
+                    "policy_action": policy_action,
+                    "executed_action": executed,
+                    "chunk_len": int(step["chunk_len"]),
+                    "discarded": int(step["discarded"]),
+                    "teleop_source": info.get("teleop_source", "none"),
+                    "teleop_age_s": info.get("teleop_age_s"),
+                    "teleop_raw_action": info.get("teleop_raw_action"),
+                    "teleop_replay_action": info.get("teleop_replay_action"),
+                    "intervention_mask": info.get("intervention_mask"),
+                    "intervention_segment_id": info.get("intervention_segment_id", 0),
+                    "intervention_segment_step": info.get("intervention_segment_step", 0),
+                    "teleop_events": info.get("teleop_events", {}),
+                },
+            )
+            recorder.log(transition)
+            replay_writer.log_transition(
+                transition,
+                observation=step["observation"],
+                next_observation=step["next_observation"],
+            )
+
+        result = runner.run_episode(env, max_steps=args.steps, on_step=record_step)
+        recorder.close()
+        replay_writer.close()
+        recorder = None
+        replay_writer = None
         summary["steps"] = result["n"]
+        summary["recording_path"] = str(args.record_dir / args.record_experiment / "transitions.jsonl")
+        summary["replay_path"] = str(args.record_dir / args.record_experiment / "replay")
         summary["discarded_per_step"] = result["steps"][0]["discarded"] if result["steps"] else None
         if result["steps"]:
             summary["last_fault"] = result["steps"][-1]["info"].get("fault_code")
@@ -192,6 +276,10 @@ def main() -> None:
         assert step.discarded_tail.shape[0] == chunk.shape[0] - 1
         assert len(runner.pending_queue) == 0
 
+    if recorder is not None:
+        recorder.close()
+    if replay_writer is not None:
+        replay_writer.close()
     env.close()
     if hasattr(policy, "close"):
         policy.close()

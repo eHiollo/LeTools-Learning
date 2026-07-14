@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 
 @dataclass
 class TransitionRecord:
@@ -43,6 +45,106 @@ class EpisodeRecorder:
 
     def close(self) -> None:
         self._fp.close()
+
+
+class HILReplayWriter:
+    """Durable, episode-oriented replay storage for HIL-SERL collection."""
+
+    def __init__(self, root: str | Path, experiment_id: str, *, jpeg_quality: int = 90):
+        self.root = Path(root) / experiment_id / "replay"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.episodes_root = self.root / "episodes"
+        self.episodes_root.mkdir(exist_ok=True)
+        self.jpeg_quality = int(np.clip(jpeg_quality, 1, 100))
+        self._files: dict[str, Any] = {}
+        self._write_schema()
+
+    def _write_schema(self) -> None:
+        path = self.root / "schema.json"
+        if not path.exists():
+            path.write_text(
+                json.dumps(
+                    {
+                        "format": "kuavo-hil-replay-v1",
+                        "transition": "obs, action, reward, next_obs, done, intervention",
+                        "state_key": "observation.state",
+                        "images": "JPEG when OpenCV is available, otherwise .npy",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+    def _episode_dir(self, episode_id: str) -> Path:
+        directory = self.episodes_root / episode_id
+        (directory / "frames").mkdir(parents=True, exist_ok=True)
+        return directory
+
+    @staticmethod
+    def _array(value: Any) -> np.ndarray:
+        if hasattr(value, "detach"):
+            value = value.detach().cpu().numpy()
+        return np.asarray(value)
+
+    def _write_image(self, frame_path: Path, image: Any) -> Path:
+        arr = self._array(image)
+        if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
+            arr = np.transpose(arr, (1, 2, 0))
+        if arr.ndim != 3:
+            raise ValueError(f"image must be HWC/CHW, got {arr.shape}")
+        if arr.dtype != np.uint8:
+            if arr.size and float(np.max(arr)) <= 1.0:
+                arr = arr * 255.0
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        try:
+            import cv2
+
+            bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR) if arr.shape[-1] == 3 else arr
+            output = frame_path.with_suffix(".jpg")
+            if not cv2.imwrite(str(output), bgr, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]):
+                raise RuntimeError("cv2.imwrite returned false")
+            return output
+        except Exception:
+            output = frame_path.with_suffix(".npy")
+            np.save(output, arr)
+            return output
+
+    def _write_observation(self, episode_dir: Path, step_id: int, prefix: str, obs: dict) -> dict[str, Any]:
+        state = self._array(obs["observation.state"]).astype(np.float32).reshape(-1)
+        state_path = episode_dir / "frames" / f"{step_id:06d}_{prefix}_state.npy"
+        np.save(state_path, state)
+        images: dict[str, str] = {}
+        for key, value in obs.items():
+            if not key.startswith("observation.images."):
+                continue
+            safe_key = key.rsplit(".", 1)[-1]
+            path = self._write_image(episode_dir / "frames" / f"{step_id:06d}_{prefix}_{safe_key}", value)
+            images[key] = str(path.relative_to(self.root))
+        return {"state": str(state_path.relative_to(self.root)), "images": images}
+
+    def log_transition(
+        self,
+        record: TransitionRecord,
+        *,
+        observation: dict,
+        next_observation: dict,
+    ) -> None:
+        episode_dir = self._episode_dir(record.episode_id)
+        fp = self._files.get(record.episode_id)
+        if fp is None:
+            fp = open(episode_dir / "transitions.jsonl", "a", encoding="utf-8")
+            self._files[record.episode_id] = fp
+        row = asdict(record)
+        row["observation"] = self._write_observation(episode_dir, record.step_id, "obs", observation)
+        row["next_observation"] = self._write_observation(episode_dir, record.step_id, "next", next_observation)
+        fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+        fp.flush()
+
+    def close(self) -> None:
+        for fp in self._files.values():
+            fp.close()
+        self._files = {}
 
 
 def _safe_cmd(cmd: list[str]) -> str:

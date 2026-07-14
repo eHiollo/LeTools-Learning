@@ -71,6 +71,8 @@ class KuavoHILSerlEnv(gym.Env):
         self._step_count = 0
         self._episode_start_s = 0.0
         self._frames: list[EpisodeFrame] = []
+        self._intervention_segment_id = 0
+        self._intervention_segment_step = 0
         self._closed = False
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
@@ -79,6 +81,8 @@ class KuavoHILSerlEnv(gym.Env):
         self._step_count = 0
         self._episode_start_s = time.time()
         self._frames = []
+        self._intervention_segment_id = 0
+        self._intervention_segment_step = 0
         self.teleop.reset()
         be_obs = self.backend.reset(seed=seed)
         self.gate.reset(initial_action=be_obs.state)
@@ -103,6 +107,23 @@ class KuavoHILSerlEnv(gym.Env):
 
         raw = np.asarray(action, dtype=np.float32).reshape(-1)
         event = self.teleop.poll()
+        self._teleop_source = getattr(event, "source", "none")
+        self._teleop_age_s = getattr(event, "age_s", None)
+        self._teleop_raw_action = (
+            np.asarray(event.action, dtype=np.float32).reshape(-1).tolist()
+            if event.action is not None
+            else None
+        )
+        self._teleop_replay_action = None
+        self._intervention_mask = None
+        self._teleop_events = {
+            "success": bool(event.success),
+            "failure": bool(event.failure),
+            "abort": bool(event.abort),
+            "pause": bool(event.pause),
+            "stop": bool(event.stop),
+            "deadman": bool(event.deadman),
+        }
 
         # Manual events have priority over policy
         manual = self.det_reward.from_manual(
@@ -146,18 +167,40 @@ class KuavoHILSerlEnv(gym.Env):
             )
             return be_obs.as_gym_obs(), 0.0, False, False, info
 
-        # Teleop override
+        # Teleop override.  Raw Quest/IK targets are never used as replay
+        # labels directly: only the gripped dimensions overwrite measured state.
         step_action = raw
         is_intervention = False
+        teleop_target = None
         if event.is_intervention and event.action is not None:
             if self.config.safety.require_deadman_for_teleop and not event.deadman:
                 # ignore teleop without deadman
                 pass
             else:
-                step_action = np.asarray(event.action, dtype=np.float32).reshape(-1)
+                teleop_target = np.asarray(event.action, dtype=np.float32).reshape(-1)
                 is_intervention = True
 
         be_obs_pre = self.backend.get_observation()
+        if is_intervention:
+            mask = getattr(event, "intervention_mask", None)
+            if mask is None:
+                mask = np.ones(ACTION_DIM, dtype=bool)
+            else:
+                mask = np.asarray(mask, dtype=bool).reshape(-1)
+                if mask.shape != (ACTION_DIM,):
+                    raise ValueError(f"intervention mask must be {ACTION_DIM}-D")
+            # Hold all non-intervened dimensions at measured state.  The safety
+            # gate below then bounds the human-commanded dimensions consistently
+            # with policy actions.
+            step_action = np.asarray(be_obs_pre.state, dtype=np.float32).copy()
+            step_action[mask] = teleop_target[mask]
+            self._intervention_mask = mask.tolist()
+            if self._intervention_segment_step == 0:
+                self._intervention_segment_id += 1
+            self._intervention_segment_step += 1
+        else:
+            self._intervention_segment_step = 0
+
         gate = self.gate.check(
             step_action,
             stop=self.backend.is_stop() or event.stop,
@@ -178,13 +221,15 @@ class KuavoHILSerlEnv(gym.Env):
             )
             return be_obs_pre.as_gym_obs(), float(decision.reward), decision.terminated, decision.truncated, info
 
+        if is_intervention:
+            self._teleop_replay_action = gate.action.tolist()
         cmd = build_published_command(
             raw_action=step_action,
             clipped_action=gate.action,
             claw_scale=self.config.claw_command_scale,
         )
 
-        if not self.config.shadow_mode:
+        if not self.config.shadow_mode and not is_intervention:
             try:
                 self.backend.publish(cmd)
             except Exception as exc:  # noqa: BLE001
@@ -277,9 +322,20 @@ class KuavoHILSerlEnv(gym.Env):
             "reward_source": reward_source,
             "shadow_mode": self.config.shadow_mode,
             "action_audit": audit or {},
+            "teleop_source": getattr(self, "_teleop_source", "none"),
+            "teleop_age_s": getattr(self, "_teleop_age_s", None),
+            "teleop_raw_action": getattr(self, "_teleop_raw_action", None),
+            "teleop_replay_action": getattr(self, "_teleop_replay_action", None),
+            "intervention_mask": getattr(self, "_intervention_mask", None),
+            "intervention_segment_id": self._intervention_segment_id,
+            "intervention_segment_step": self._intervention_segment_step,
+            "teleop_events": getattr(self, "_teleop_events", {}),
         }
 
     def close(self):
         self._closed = True
         self.reward_worker.stop()
         self.backend.close()
+        closer = getattr(self.teleop, "close", None)
+        if callable(closer):
+            closer()

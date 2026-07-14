@@ -180,11 +180,14 @@ class RobometerRewardWorker:
     def _score_with_lerobot(
         self, frames: list[EpisodeFrame], task_text: str, t0: float
     ) -> RobometerScore:
-        # Intentionally minimal: real loading is heavy; fail soft if deps missing.
-        raise RuntimeError(
-            "Robometer real inference not loaded; inject a scorer or run "
-            "scripts/rl/score_rollouts_robometer.py offline first"
-        )
+        from kuavo_rl.robometer_scorer import RobometerScorer, get_shared_scorer
+
+        model_id = getattr(self.config, "robometer_model_id", None) or "lerobot/Robometer-4B"
+        scorer: RobometerScorer = get_shared_scorer(model_id=model_id)
+        score = scorer.score_episode_frames(frames, task_text)
+        if score.latency_s <= 0:
+            score.latency_s = time.time() - t0
+        return score
 
 
 def stub_scorer(frames: list[EpisodeFrame], task_text: str) -> RobometerScore:

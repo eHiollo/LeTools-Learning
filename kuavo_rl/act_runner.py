@@ -86,11 +86,16 @@ class ActExecuteFirstRunner:
             limit = getattr(getattr(env, "config", None), "episode", None)
             limit = getattr(limit, "max_steps", 50) if limit is not None else 50
 
-        for _ in range(int(limit)):
+        for step_id in range(int(limit)):
             result = self.select_action(obs)
             next_obs, reward, terminated, truncated, info = env.step(result.action)
             record = {
+                # policy_action is always the ACT proposal.  executed_action is
+                # resolved by the env and can instead be the VR action.
                 "action": result.action,
+                "step_id": step_id,
+                "policy_action": result.action.copy(),
+                "executed_action": info.get("action_audit", {}).get("raw_action"),
                 "chunk_len": int(result.chunk.shape[0]),
                 "discarded": int(result.discarded_tail.shape[0]),
                 "reward": float(reward),
@@ -98,9 +103,12 @@ class ActExecuteFirstRunner:
                 "truncated": bool(truncated),
                 "info": info,
             }
-            history.append(record)
             if on_step:
-                on_step(record)
+                callback_record = dict(record)
+                callback_record["observation"] = obs
+                callback_record["next_observation"] = next_obs
+                on_step(callback_record)
+            history.append(record)
             obs = next_obs
             if terminated or truncated:
                 break

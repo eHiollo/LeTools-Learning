@@ -1,8 +1,12 @@
 reward:
   type: robometer
   model_id: lerobot/Robometer-4B
+  # Prefer local ModelScope snapshots when HF is blocked:
+  #   python scripts/rl/prefetch_robometer_modelscope.py
+  #   data/models/Robometer-4B + data/models/Qwen3-VL-4B-Instruct
+  base_model_id: Qwen/Qwen3-VL-4B-Instruct
   task_text: "将物料框搬运到胸前的目标位置"
-  mode: episode_end  # episode_end | offline | disabled
+  mode: disabled  # keep disabled until 3.4 gates.passed; then episode_end
   async_timeout_s: 30
   allow_dense_progress: false
   dense_progress_hz: 1.0
@@ -12,3 +16,4 @@ calibration_gates:
 notes: >
   Do not run Robometer inside the 10 Hz control loop.
   Prefer offline score_rollouts_robometer.py before enabling online mode.
+  If HuggingFace / hf-mirror unreachable, use ModelScope prefetch (this machine: modelscope.cn OK).

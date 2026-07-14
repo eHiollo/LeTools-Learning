@@ -18,6 +18,7 @@ def make_kuavo_hilserl_env(
     backend: RobotBackend | None = None,
     use_stub_robometer: bool = True,
     kuavo_gym_env: Any | None = None,
+    teleop: TeleopAdapter | None = None,
 ) -> KuavoHILSerlEnv:
     """
     Create KuavoHILSerlEnv for sim/shadow/real.
@@ -51,7 +52,7 @@ def make_kuavo_hilserl_env(
     return KuavoHILSerlEnv(
         config=cfg,
         backend=backend,
-        teleop=TeleopAdapter(),
+        teleop=teleop or TeleopAdapter(),
         reward_worker=worker,
     )
 

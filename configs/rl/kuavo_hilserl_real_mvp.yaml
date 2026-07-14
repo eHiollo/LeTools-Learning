@@ -16,8 +16,9 @@ env:
     max_duration_s: 15
   reward:
     task_text: "将物料框搬运到胸前的目标位置"
-    use_robometer: true
-    robometer_mode: episode_end
+    # Keep offline until Robometer calibration gates pass.
+    use_robometer: false
+    robometer_mode: disabled
 policy:
   type: gaussian_actor
   device: cuda
@@ -42,3 +43,17 @@ wandb:
 notes: >
   Real MVP only after Phase 6 shadow gates.
   Stage-B uses single-step gaussian_actor+sac; never write ACT chunks into replay.
+
+# Existing Quest3 IK is the teleop owner. Set task/UI-specific reward buttons
+# only after confirming the actual JoySticks mapping on the robot.
+teleop:
+  joystick_topic: /quest_joystick_data
+  arm_traj_topic: /kuavo_arm_traj
+  teleop_timeout_s: 0.20
+  # Original Quest3 teleop uses grip as per-arm hold-to-control deadman.
+  grip_threshold: 0.80
+  # Avoid X/A/Y activation, grips/triggers, joysticks and left double-button stop.
+  # Use only B (right_second): click=success, double-click=failure, hold >=1.2s=abort.
+  reward_button: right_second_button_pressed
+  reward_double_press_s: 0.35
+  reward_long_press_s: 1.20

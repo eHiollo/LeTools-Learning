@@ -1,0 +1,8 @@
+#上发文件
+rsync -avz --progress \
+  /home/fulin/robot-il/LeTools-Learning/data/lerobot/lerobot_merged/ \
+  wangjunyang@47.107.131.228:/home/wangjunyang/robot-il/LeTools-Learning/data/lerobot/lerobot_merged/
+#拉回文件
+rsync -avz --progress \
+  /home/fulin/robot-il/LeTools-Learning/data/lerobot/lerobot_merged/ \
+  wangjunyang@47.107.131.228:/home/wangjunyang/robot-il/LeTools-Learning/data/lerobot/lerobot_merged/
