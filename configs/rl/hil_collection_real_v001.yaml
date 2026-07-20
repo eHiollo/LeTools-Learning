@@ -1,0 +1,48 @@
+# Real-robot HIL collect — camera path aligned with KuavoBrain v3 (H.265).
+collection:
+  task_id: box_to_chest_v1
+  task_text: 将物料框搬运到胸前目标位置（真机）
+  root: data/rl_runs/hilserl_episodes/hilserl_real
+  mode: vr_only
+  default_max_steps: 300
+  default_max_duration_s: 90
+  reset_time_s: 60
+  batch_stop_on_quarantine: true
+  episode_control: quest_y_stick
+  chord_long_press_s: 1.0
+  right_stick_trigger_threshold: 0.80
+  right_stick_rearm_neutral_threshold: 0.20
+  right_stick_debounce_s: 0.25
+  right_stick_exclusive: false
+  require_collection_mode_ack: false
+  auto_start_after_reset: false
+  auto_accept: true
+  # Session-end batch export; bags use /cam_*/color/h265_stream
+  auto_export_lerobot: true
+  lerobot_topic_profile: brain
+
+metadata:
+  robot_type: Kuavo
+  eef_type: leju_claw
+  robot_version: "62"
+  lower_commit: unknown
+  scene_id: real_default
+  task_variant: default
+
+recording:
+  topics_profile: configs/rl/hil_topics_v002.yaml
+  live_rosbag: true
+  dry_run_recorder: false
+  skip_gate_ros: false
+  post_roll_s: 0.5
+  start_block_disk_percent: 90
+  hard_stop_disk_percent: 95
+  allow_degraded_export: false
+
+runner:
+  policy: none
+  checkpoint: null
+  shadow_mode: true
+  ros_teleop: true
+  deploy_config: configs/deploy/total/deploy_total.yaml
+  env_config: configs/rl/kuavo_hilserl_real_mvp.yaml

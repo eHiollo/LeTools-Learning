@@ -1,0 +1,105 @@
+# Real-robot HIL topics — cameras match KuavoBrain v3 topics.yaml (H.265, not JPEG).
+version: hil-v002
+robot_type: Kuavo
+eef_type: leju_claw
+control_profile: act_vr
+topics:
+  - name: /sensors_data_raw
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 25
+    freshness_s: 1.0
+  - name: /joint_cmd
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 25
+    freshness_s: 1.0
+  - name: /tf
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 2.0
+  - name: /tf_static
+    role: calibration
+    mode: latched
+    required_for_start: true
+    required_for_export: true
+  - name: /kuavo_arm_traj
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+    profiles: [act_vr, vr_only]
+    min_hz: 25
+    freshness_s: 1.0
+  - name: /ik_fk_result/input_pos
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    profiles: [act_vr, vr_only]
+  - name: /ik_fk_result/eef_pose
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    profiles: [act_vr, vr_only]
+  - name: /leju_claw_state
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 2.0
+  - name: /cam_h/color/h265_stream
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 20
+    freshness_s: 1.0
+  - name: /cam_l/color/h265_stream
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 20
+    freshness_s: 1.0
+  - name: /cam_r/color/h265_stream
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 20
+    freshness_s: 1.0
+  - name: /hil/transition_audit
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+  - name: /hil/result_event
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+  - name: /leju_claw_command
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+  - name: /kuavo/arm_zeros
+    role: calibration
+    mode: latched
+    required_for_start: false
+    required_for_export: false
+  - name: /kuavo/offset
+    role: calibration
+    mode: latched
+    required_for_start: false
+    required_for_export: false

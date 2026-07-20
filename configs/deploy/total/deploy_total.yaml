@@ -13,10 +13,10 @@ env:  # 推理环境设置。
   control_rate: 100  # WBC/插值后的实际控制指令频率
   image_size: [848, 480]  # 相机缩放尺寸。
   depth_range: [0, 1500]  # 深度裁剪范围。
-  obs_key_map:  # 各个观测 topic 的配置。
-    head_cam_h: ["/cam_h/color/image_raw/compressed", "CompressedImage", 30, "${env.image_size}"]  # 头部相机 topic。
-    wrist_cam_l: ["/cam_l/color/image_raw/compressed", "CompressedImage", 30, "${env.image_size}"]  # 左腕相机 topic。
-    wrist_cam_r: ["/cam_r/color/image_raw/compressed", "CompressedImage", 30, "${env.image_size}"]  # 右腕相机 topic。
+  obs_key_map:  # 与 KuavoBrain v3 生产数采一致：H.265 主码流（非 JPEG compressed）。
+    head_cam_h: ["/cam_h/color/h265_stream", "CompressedImage", 30, "${env.image_size}"]
+    wrist_cam_l: ["/cam_l/color/h265_stream", "CompressedImage", 30, "${env.image_size}"]
+    wrist_cam_r: ["/cam_r/color/h265_stream", "CompressedImage", 30, "${env.image_size}"]
     joint_q: ["/sensors_data_raw", "sensorsData", 500]  # 关节状态 topic。
     rq2f85: ["/gripper/state", "JointState", 500]  # RQ2F85 topic。选这个夹爪时自动生效。
     leju_claw: ["/leju_claw_state", "lejuClawState", 500]  # Leju claw topic。选这个夹爪时自动生效。

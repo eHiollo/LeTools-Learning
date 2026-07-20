@@ -9,7 +9,7 @@ from tqdm import tqdm
 import time
 import sys
 from kuavo_deploy.config import KuavoConfig
-from sensor_msgs.msg import CompressedImage, JointState
+from sensor_msgs.msg import CompressedImage, Image, JointState
 from torchvision.transforms.functional import to_tensor
 from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import sensorsData,lejuClawState
 from kuavo_deploy.utils.signal_controller import ControlSignalManager
@@ -59,10 +59,22 @@ class ObsBuffer:
         }
 
         # === ROS topic 对应表 ===
+        # v3 production: /cam_*/color/h265_stream (CompressedImage format=h265)
+        # Legacy JPEG: /cam_*/color/image_raw/compressed
+        # Sim mujoco: /camera|/wrist_cam_*/color/image_raw
+        self._h265_decoders: Dict[str, Any] = {}
         self.callback_key_map = {
+            '/cam_h/color/h265_stream': self.rgb_callback,
+            '/cam_l/color/h265_stream': self.rgb_callback,
+            '/cam_r/color/h265_stream': self.rgb_callback,
             '/cam_h/color/image_raw/compressed': self.rgb_callback,
             '/cam_l/color/image_raw/compressed': self.rgb_callback,
             '/cam_r/color/image_raw/compressed': self.rgb_callback,
+            '/camera/color/image_raw': self.rgb_raw_callback,
+            '/left_wrist_camera/color/image_raw': self.rgb_raw_callback,
+            '/right_wrist_camera/color/image_raw': self.rgb_raw_callback,
+            '/wrist_cam_l/color/image_raw': self.rgb_raw_callback,
+            '/wrist_cam_r/color/image_raw': self.rgb_raw_callback,
             '/cam_h/depth/image_raw/compressedDepth': self.depth_callback,
             '/cam_l/depth/image_rect_raw/compressedDepth': self.depth_callback,
             '/cam_r/depth/image_rect_raw/compressedDepth': self.depth_callback,
@@ -79,15 +91,23 @@ class ObsBuffer:
 
     def setup_subscribers(self):
         """仅订阅来自 ROS 的观测"""
-        msg_type_dict = {"CompressedImage":CompressedImage,
-                         "sensorsData":sensorsData,
-                         "JointState":JointState,
-                         "lejuClawState":lejuClawState}
+        msg_type_dict = {
+            "CompressedImage": CompressedImage,
+            "Image": Image,
+            "sensorsData": sensorsData,
+            "JointState": JointState,
+            "lejuClawState": lejuClawState,
+        }
         for topic_key, info in self.subscribe_keys.items():
             topic_name = info["topic"]
             assert info["msg_type"] in msg_type_dict, f"msg_type '{info['msg_type']}' is not supported; valid keys: {list(msg_type_dict.keys())}"
             msg_type = msg_type_dict[info["msg_type"]]
             callback = self.callback_key_map.get(topic_name)
+            # Fallback by msg type so new topic names in yaml still work.
+            if callback is None and info["msg_type"] == "Image":
+                callback = self.rgb_raw_callback
+            elif callback is None and info["msg_type"] == "CompressedImage":
+                callback = self.rgb_callback
 
             if not msg_type or not callback:
                 log_robot.warning(f"Missing msg_type or callback for {topic_name}")
@@ -114,12 +134,63 @@ class ObsBuffer:
         return depth_normalized
 
     # ===== Callback 函数群 =====
+    def _h265_decoder_for(self, key: str):
+        dec = self._h265_decoders.get(key)
+        if dec is None:
+            from kuavo_rl.h265_decode import H265StreamDecoder
+
+            dec = H265StreamDecoder()
+            self._h265_decoders[key] = dec
+        return dec
+
     def rgb_callback(self, msg: CompressedImage, key: str, handle: dict):
-        img_arr = np.frombuffer(msg.data, dtype=np.uint8)
-        cv_img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-        if cv_img is None:
-            raise ValueError("Failed to decode compressed image")
-        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        """JPEG compressed or KuavoBrain v3 H.265 CompressedImage."""
+        from kuavo_rl.h265_decode import is_h265_compressed
+
+        fmt = getattr(msg, "format", None)
+        if is_h265_compressed(fmt):
+            rgb = self._h265_decoder_for(key).decode(bytes(msg.data))
+            if rgb is None:
+                return
+            cv_img = rgb
+        else:
+            img_arr = np.frombuffer(msg.data, dtype=np.uint8)
+            cv_img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+            if cv_img is None:
+                # Topic may be h265_stream without format set — try HEVC.
+                rgb = self._h265_decoder_for(key).decode(bytes(msg.data))
+                if rgb is None:
+                    return
+                cv_img = rgb
+            else:
+                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        resize_wh = handle.get("params", {}).get("resize_wh", None)
+        if resize_wh:
+            cv_img = cv2.resize(cv_img, resize_wh)
+        data = self.img_preprocess(cv_img)
+        self._append_data(key, data, msg.header.stamp.to_sec())
+
+    def rgb_raw_callback(self, msg: Image, key: str, handle: dict):
+        """Decode sensor_msgs/Image from mujoco publish_camera:=true."""
+        encoding = (msg.encoding or "").lower()
+        channels = {
+            "rgb8": 3,
+            "bgr8": 3,
+            "rgba8": 4,
+            "bgra8": 4,
+            "mono8": 1,
+        }.get(encoding)
+        if channels is None:
+            raise ValueError(f"unsupported Image encoding: {msg.encoding!r}")
+        cv_img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, channels)
+        if encoding == "bgr8":
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        elif encoding == "bgra8":
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGRA2RGB)
+        elif encoding == "rgba8":
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
+        elif encoding == "mono8":
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
         resize_wh = handle.get("params", {}).get("resize_wh", None)
         if resize_wh:
             cv_img = cv2.resize(cv_img, resize_wh)
