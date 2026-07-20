@@ -1,0 +1,34 @@
+# HIL overlay for KuavoBrain CvtRosbag2Lerobot (do not replace that converter).
+# Used by scripts/rl/export_hil_to_lerobot.py → kuavo_data/CvtRosbag2Lerobot.py
+hydra:
+  run:
+    dir: ./outputs/data_cvt_hydra_save/hil_singlerun/${now:%Y%m%d_%H%M%S}
+  sweep:
+    dir: ./outputs/data_cvt_hydra_save/hil_multirun/${now:%Y%m%d_%H%M%S}
+    subdir: ${hydra:job.override_dirname}
+
+rosbag:
+  rosbag_dir: /path/to/bag_dir
+  num_used: null
+  lerobot_dir: hil_lerobot_out
+  chunk_size: 100
+
+dataset:
+  only_arm: true
+  platform_type: "5w"
+  eef_type: leju_claw
+  which_arm: both
+  use_depth: false
+  depth_range: [0, 1500]
+  task_description: "box_to_chest_v1"
+  train_hz: 10
+  main_timeline: head_cam_h
+  main_timeline_fps: 30
+  sample_drop: 0
+  dex_dof_needed: 1
+  is_binary: false
+  delta_action: false
+  relative_start: false
+  resize:
+    width: 848
+    height: 480
