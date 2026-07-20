@@ -101,7 +101,11 @@ class SafetyGate:
         return SafetyResult(True, clipped, was_clipped, FaultCode.NONE, "")
 
     def clips_exceeded(self) -> bool:
-        return self.consecutive_clips >= self.config.max_consecutive_clips
+        # <=0 disables ACTION_LIMIT truncation (still soft-clips for recording).
+        limit = int(self.config.max_consecutive_clips)
+        if limit <= 0:
+            return False
+        return self.consecutive_clips >= limit
 
     def _hold(self) -> np.ndarray:
         if self._last_action is not None:
