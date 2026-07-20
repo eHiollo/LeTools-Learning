@@ -13,12 +13,21 @@ env:
     joint_position_high: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 1.0, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 1.0]
     max_delta_rad: [0.664, 0.256, 0.424, 0.256, 0.424, 0.424, 0.424, 1.0, 0.664, 0.256, 0.424, 0.256, 0.424, 0.424, 0.424, 1.0]
   episode:
-    max_steps: 75
-    max_duration_s: 15
+    max_steps: 300
+    max_duration_s: 90
   reward:
     task_text: "将物料框搬运到胸前的目标位置"
     use_robometer: true
     robometer_mode: episode_end
+# Quest B = right_second_button (same as real MVP): click=success, double=failure, hold=abort
+teleop:
+  joystick_topic: /quest_joystick_data
+  arm_traj_topic: /kuavo_arm_traj
+  teleop_timeout_s: 0.20
+  grip_threshold: 0.80
+  reward_button: right_second_button_pressed
+  reward_double_press_s: 0.35
+  reward_long_press_s: 1.20
 policy:
   type: gaussian_actor
   device: cuda

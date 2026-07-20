@@ -1,0 +1,120 @@
+# Sim profile for Kuavo MuJoCo wheel + publish_camera:=true
+# Aligned with reference bag topics needed by KuavoBrain CvtRosbag2Lerobot:
+#   /home/fulin/visuals_joint_traj_accelerate/A10-A15-I-L-05-TQ_01_01-5W_59-leju_claw-...-v003.bag
+# Cameras stay sim-native (/camera, /wrist_cam_*); export aliases them for Brain.
+version: hil-sim-v002
+robot_type: Kuavo
+eef_type: leju_claw
+control_profile: act
+topics:
+  - name: /sensors_data_raw
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 50
+    freshness_s: 1.0
+  # Brain CvtRosbag2Lerobot action source (ref bag ~120Hz JointState).
+  # Not required_for_start: sim may be quiet until grip/IK is active.
+  - name: /kuavo_arm_traj
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+    min_hz: 5
+    freshness_s: 2.0
+  - name: /kuavo_arm_traj_synced
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    min_hz: 1
+    freshness_s: 5.0
+  - name: /joint_cmd
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+    min_hz: 1
+    freshness_s: 5.0
+  - name: /tf
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 5
+    freshness_s: 2.0
+  - name: /tf_static
+    role: calibration
+    mode: latched
+    required_for_start: true
+    required_for_export: true
+  - name: /leju_claw_state
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 5
+    freshness_s: 2.0
+  # Sim VR often never publishes claw command (grip IK path); Brain can use state.
+  # Keep recording when present, but do not fail quality if absent.
+  - name: /leju_claw_command
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    min_hz: 1
+    freshness_s: 5.0
+  - name: /camera/color/image_raw
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 1.0
+  - name: /wrist_cam_l/color/image_raw
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 1.0
+  - name: /wrist_cam_r/color/image_raw
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 1.0
+  # Optional: if sim also publishes Brain-style compressed cams, record them too
+  - name: /cam_h/color/image_raw/compressed
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    min_hz: 5
+    freshness_s: 2.0
+  - name: /cam_l/color/image_raw/compressed
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    min_hz: 5
+    freshness_s: 2.0
+  - name: /cam_r/color/image_raw/compressed
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    min_hz: 5
+    freshness_s: 2.0
+  - name: /hil/transition_audit
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+  - name: /hil/result_event
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: true

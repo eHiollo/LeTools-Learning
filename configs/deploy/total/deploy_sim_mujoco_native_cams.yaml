@@ -1,0 +1,74 @@
+# Kuavo-Sim with native mujoco cameras (publish_camera:=true).
+# Launch (ROS side):
+#   export ROBOT_VERSION=62
+#   roslaunch humanoid_controllers load_kuavo_mujoco_sim_wheel.launch publish_camera:=true
+env:
+  inference_env: sim
+  only_arm: true
+  eef_type: leju_claw
+  platform_type: "5w"
+  control_mode: joint
+  which_arm: both
+  # radians (SDK control_head); ~12° pitch. Was wrongly [0, 12] → clamp spam every reset.
+  head_init: [0.0, 0.209]
+  ros_rate: 10
+  direct_to_wbc: false
+  enable_action_interpolation: true
+  control_rate: 100
+  image_size: [640, 480]
+  depth_range: [0, 1500]
+  obs_key_map:
+    # Current sim publishes /wrist_cam_{l,r}/... (not /left_wrist_camera/...).
+    head_cam_h: ["/camera/color/image_raw", "Image", 15, "${env.image_size}"]
+    wrist_cam_l: ["/wrist_cam_l/color/image_raw", "Image", 15, "${env.image_size}"]
+    wrist_cam_r: ["/wrist_cam_r/color/image_raw", "Image", 15, "${env.image_size}"]
+    joint_q: ["/sensors_data_raw", "sensorsData", 50]
+    leju_claw: ["/leju_claw_state", "lejuClawState", 50]
+  arm_state_keys: ["joint_q", "gripper"]
+  ratio: 1.0
+  frame_alignment: false
+  qiangnao_dof_needed: 1
+  limits:
+    joint_q:
+      min: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
+      max: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
+    gripper:
+      min: [0, 0]
+      max: [1, 1]
+    eef:
+      min: [-1, -1, -1, -3.14, -3.14, -3.14, -1, -1, -1, -3.14, -3.14, -3.14]
+      max: [1, 1, 1, 3.14, 3.14, 3.14, 1, 1, 1, 3.14, 3.14, 3.14]
+    base:
+      min: [-2.0, -2.0, -3.14, 0]
+      max: [2.0, 2.0, 3.14, 1]
+  is_binary: false
+
+inference:
+  go_bag_path: ""
+  policy_type: act
+  pretrained_path: outputs/train/act_placeholder
+  eval_episodes: 1
+  seed: 0
+  start_seed: 0
+  device: cpu
+  max_episode_steps: 20
+  task_prompt: "kuavo sim native mujoco cameras"
+  async_inference: false
+  async_control_hz: 0.0
+  async_buffer_size: 50
+  async_low_watermark: 5
+  async_warmup_actions: 1
+  async_action_timeout: 1.0
+  rtc_lite_enabled: false
+  rtc_lite_overlap_steps: 5
+  rtc_lite_freeze_steps: 1
+  rtc_lite_ramp: cosine
+  rtc_lite_max_delay_steps: 3
+  rtc_lite_keep_min_actions: 1
+  rtc_full_enabled: false
+  rtc_full_mode: vjp
+  rtc_full_overlap_steps: 5
+  rtc_full_max_delay_steps: 8
+  rtc_full_debug: false
+  rtc_full_prefix_attention_schedule: exp
+  rtc_full_max_guidance_weight: 5.0

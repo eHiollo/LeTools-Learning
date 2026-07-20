@@ -1,0 +1,49 @@
+collection:
+  task_id: box_to_chest_v1
+  task_text: 将物料框搬运到胸前目标位置（仿真）
+  root: data/rl_runs/hilserl_episodes/hilserl_vr
+  mode: vr_only
+  default_max_steps: 300
+  default_max_duration_s: 90
+  reset_time_s: 60
+  batch_stop_on_quarantine: true
+  # Hold Y + right stick (see EPISODE_CONTROL_OPERATOR_CARD). Alt: quest_y_chord
+  episode_control: quest_y_stick
+  chord_long_press_s: 1.0
+  right_stick_trigger_threshold: 0.80
+  right_stick_rearm_neutral_threshold: 0.20
+  right_stick_debounce_s: 0.25
+  right_stick_exclusive: false
+  require_collection_mode_ack: false
+  auto_start_after_reset: false
+  # Solo: B end auto-labels and publishes accepted_replay/TRAIN_READY (skip offline review)
+  auto_accept: true
+  # After accept: stage bag; at session end batch CvtRosbag2Lerobot → one LeRobot v3
+  auto_export_lerobot: true
+  lerobot_topic_profile: sim
+
+metadata:
+  robot_type: Kuavo
+  eef_type: leju_claw
+  robot_version: "62"
+  lower_commit: unknown
+  scene_id: sim_table_a
+  task_variant: default
+
+recording:
+  topics_profile: configs/rl/hil_topics_sim_v002.yaml
+  live_rosbag: true
+  dry_run_recorder: false
+  skip_gate_ros: true
+  post_roll_s: 0.5
+  start_block_disk_percent: 90
+  hard_stop_disk_percent: 95
+  allow_degraded_export: false
+
+runner:
+  policy: none
+  checkpoint: null
+  shadow_mode: true
+  ros_teleop: true
+  deploy_config: configs/deploy/total/deploy_sim_mujoco_native_cams.yaml
+  env_config: configs/rl/kuavo_hilserl_sim.yaml
