@@ -48,13 +48,36 @@ class EpisodeRecorder:
 
 
 class HILReplayWriter:
-    """Durable, episode-oriented replay storage for HIL-SERL collection."""
+    """Durable, episode-oriented replay storage for HIL-SERL collection.
 
-    def __init__(self, root: str | Path, experiment_id: str, *, jpeg_quality: int = 90):
-        self.root = Path(root) / experiment_id / "replay"
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.episodes_root = self.root / "episodes"
-        self.episodes_root.mkdir(exist_ok=True)
+    Legacy layout (default):
+      ``<root>/<experiment_id>/replay/episodes/<episode_id>/``
+
+    Staging layout (``staging_dir`` set — preferred by hil_recording):
+      ``<staging_dir>/{transitions.jsonl, frames/}``
+      Training loaders must only read ``accepted_replay/`` after publish.
+    """
+
+    def __init__(
+        self,
+        root: str | Path,
+        experiment_id: str,
+        *,
+        jpeg_quality: int = 90,
+        staging_dir: str | Path | None = None,
+    ):
+        self.experiment_id = experiment_id
+        self.staging_dir = Path(staging_dir) if staging_dir is not None else None
+        if self.staging_dir is not None:
+            self.root = self.staging_dir
+            self.root.mkdir(parents=True, exist_ok=True)
+            (self.root / "frames").mkdir(exist_ok=True)
+            self.episodes_root = self.root
+        else:
+            self.root = Path(root) / experiment_id / "replay"
+            self.root.mkdir(parents=True, exist_ok=True)
+            self.episodes_root = self.root / "episodes"
+            self.episodes_root.mkdir(exist_ok=True)
         self.jpeg_quality = int(np.clip(jpeg_quality, 1, 100))
         self._files: dict[str, Any] = {}
         self._write_schema()
@@ -62,13 +85,15 @@ class HILReplayWriter:
     def _write_schema(self) -> None:
         path = self.root / "schema.json"
         if not path.exists():
+            fmt = "kuavo-hil-replay-v2-staging" if self.staging_dir is not None else "kuavo-hil-replay-v1"
             path.write_text(
                 json.dumps(
                     {
-                        "format": "kuavo-hil-replay-v1",
+                        "format": fmt,
                         "transition": "obs, action, reward, next_obs, done, intervention",
                         "state_key": "observation.state",
                         "images": "JPEG when OpenCV is available, otherwise .npy",
+                        "note": "Derived artifact; H.265 rosbag is image source of truth.",
                     },
                     indent=2,
                 )
@@ -77,7 +102,10 @@ class HILReplayWriter:
             )
 
     def _episode_dir(self, episode_id: str) -> Path:
-        directory = self.episodes_root / episode_id
+        if self.staging_dir is not None:
+            directory = self.root
+        else:
+            directory = self.episodes_root / episode_id
         (directory / "frames").mkdir(parents=True, exist_ok=True)
         return directory
 

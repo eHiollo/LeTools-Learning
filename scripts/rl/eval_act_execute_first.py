@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -126,6 +127,22 @@ def main() -> None:
         default="hilserl_vr",
         help="Subdirectory name under --record-dir.",
     )
+    parser.add_argument(
+        "--hil-recording",
+        action="store_true",
+        help="Use HILRecordingSession (staging→accepted_replay, SQLite, dry-run rosbag).",
+    )
+    parser.add_argument(
+        "--hil-recording-live-rosbag",
+        action="store_true",
+        help="With --hil-recording, start real rosbag (requires ROS).",
+    )
+    parser.add_argument(
+        "--hil-topics-profile",
+        type=Path,
+        default=None,
+        help="Topic profile yaml for HILRecordingSession (default: hil_topics_v002; sim live: hil_topics_sim_v002).",
+    )
     args = parser.parse_args()
 
     from kuavo_rl.act_runner import ActExecuteFirstRunner
@@ -202,62 +219,224 @@ def main() -> None:
 
     recorder = None
     replay_writer = None
+    hil_session = None
     if mode.startswith("kuavo"):
-        recorder = EpisodeRecorder(args.record_dir, args.record_experiment)
-        replay_writer = HILReplayWriter(args.record_dir, args.record_experiment)
+        if args.hil_recording:
+            import os
 
-        def record_step(step: dict) -> None:
-            info = step["info"]
-            audit = info.get("action_audit", {})
-            executed = step.get("executed_action") or audit.get("raw_action")
-            policy_action = np.asarray(step["policy_action"], dtype=np.float32).tolist()
-            transition = TransitionRecord(
-                experiment_id=args.record_experiment,
-                episode_id=str(info["episode_id"]),
-                step_id=int(step["step_id"]),
-                timestamp=float(info["timestamp"]),
-                action=list(executed) if executed is not None else policy_action,
-                reward=float(step["reward"]),
-                reward_source=str(info.get("reward_source", "unknown")),
-                terminated=bool(step["terminated"]),
-                truncated=bool(step["truncated"]),
-                fault_code=str(info.get("fault_code", "UNKNOWN")),
-                is_intervention=bool(info.get("is_intervention", False)),
-                action_clipped=bool(info.get("action_clipped", False)),
-                extras={
-                    "policy_action": policy_action,
-                    "executed_action": executed,
-                    "chunk_len": int(step["chunk_len"]),
-                    "discarded": int(step["discarded"]),
-                    "teleop_source": info.get("teleop_source", "none"),
-                    "teleop_age_s": info.get("teleop_age_s"),
-                    "teleop_raw_action": info.get("teleop_raw_action"),
-                    "teleop_replay_action": info.get("teleop_replay_action"),
-                    "intervention_mask": info.get("intervention_mask"),
-                    "intervention_segment_id": info.get("intervention_segment_id", 0),
-                    "intervention_segment_step": info.get("intervention_segment_step", 0),
-                    "teleop_events": info.get("teleop_events", {}),
-                },
-            )
-            recorder.log(transition)
-            replay_writer.log_transition(
-                transition,
-                observation=step["observation"],
-                next_observation=step["next_observation"],
+            from kuavo_rl.hil_recording import (
+                FINALIZED_OK,
+                HILRecordingSession,
+                RecordingConfig,
+                RecordRequest,
+                ResultEvent,
+                now_stamps,
             )
 
-        result = runner.run_episode(env, max_steps=args.steps, on_step=record_step)
-        recorder.close()
-        replay_writer.close()
-        recorder = None
-        replay_writer = None
-        summary["steps"] = result["n"]
-        summary["recording_path"] = str(args.record_dir / args.record_experiment / "transitions.jsonl")
-        summary["replay_path"] = str(args.record_dir / args.record_experiment / "replay")
-        summary["discarded_per_step"] = result["steps"][0]["discarded"] if result["steps"] else None
-        if result["steps"]:
-            summary["last_fault"] = result["steps"][-1]["info"].get("fault_code")
-            summary["last_reward"] = result["steps"][-1]["reward"]
+            root = args.record_dir / args.record_experiment
+            live = bool(args.hil_recording_live_rosbag)
+            profile = args.hil_topics_profile
+            if profile is None and live:
+                sim_profile = Path("configs/rl/hil_topics_sim_v002.yaml")
+                if sim_profile.exists():
+                    profile = sim_profile
+            hil_cfg = RecordingConfig(
+                root_dir=root,
+                dry_run_recorder=not live,
+                skip_gate_ros=not live,
+                post_roll_s=0.5,
+                bag_stall_timeout_s=30.0 if live else 5.0,
+            )
+            hil_session = HILRecordingSession(hil_cfg, profile_path=profile)
+            hil_session.recover_interrupted()
+            episode_id = f"ep_{int(time.time())}"
+            hil_session.create(
+                RecordRequest(
+                    episode_id=episode_id,
+                    task_id=args.record_experiment,
+                    control_profile="act_vr" if args.ros_teleop else "act",
+                    dry_run=not live,
+                    skip_gate_ros=not live,
+                )
+            )
+            hil_session.register_producer("act_runner", os.getpid(), kind="policy")
+            hil_session.start(episode_id)
+            replay_writer = HILReplayWriter(
+                args.record_dir,
+                args.record_experiment,
+                staging_dir=hil_cfg.staging_dir(episode_id),
+            )
+
+            def record_step(step: dict) -> None:
+                info = step["info"]
+                # Force episode_id from session for staging consistency
+                info = {**info, "episode_id": episode_id}
+                audit = info.get("action_audit", {})
+                executed = step.get("executed_action") or audit.get("raw_action")
+                policy_action = np.asarray(step["policy_action"], dtype=np.float32).tolist()
+                stamps = now_stamps()
+                transition = TransitionRecord(
+                    experiment_id=args.record_experiment,
+                    episode_id=episode_id,
+                    step_id=int(step["step_id"]),
+                    timestamp=float(stamps.wall_time_ns) / 1e9,
+                    action=list(executed) if executed is not None else policy_action,
+                    reward=float(step["reward"]),
+                    reward_source=str(info.get("reward_source", "unknown")),
+                    terminated=bool(step["terminated"]),
+                    truncated=bool(step["truncated"]),
+                    fault_code=str(info.get("fault_code", "UNKNOWN")),
+                    is_intervention=bool(info.get("is_intervention", False)),
+                    action_clipped=bool(info.get("action_clipped", False)),
+                    extras={
+                        "policy_action": policy_action,
+                        "executed_action": executed,
+                        "chunk_len": int(step["chunk_len"]),
+                        "discarded": int(step["discarded"]),
+                        "teleop_source": info.get("teleop_source", "none"),
+                        "teleop_age_s": info.get("teleop_age_s"),
+                        "teleop_raw_action": info.get("teleop_raw_action"),
+                        "teleop_replay_action": info.get("teleop_replay_action"),
+                        "intervention_mask": info.get("intervention_mask"),
+                        "intervention_segment_id": info.get("intervention_segment_id", 0),
+                        "intervention_segment_step": info.get("intervention_segment_step", 0),
+                        "teleop_events": info.get("teleop_events", {}),
+                        "stamps": stamps.to_dict(),
+                    },
+                )
+                replay_writer.log_transition(
+                    transition,
+                    observation=step["observation"],
+                    next_observation=step["next_observation"],
+                )
+                hil_session.update_transition(
+                    {
+                        "step_id": int(step["step_id"]),
+                        "stamps": stamps,
+                        "policy_action": policy_action,
+                        "executed_action": executed,
+                        "teleop_raw_action": info.get("teleop_raw_action"),
+                        "teleop_replay_action": info.get("teleop_replay_action"),
+                        "intervention_mask": info.get("intervention_mask"),
+                        "intervention_segment_id": info.get("intervention_segment_id", 0),
+                        "intervention_segment_step": info.get("intervention_segment_step", 0),
+                        "reward": float(step["reward"]),
+                        "fault_code": str(info.get("fault_code", "UNKNOWN")),
+                    }
+                )
+                stop_req = hil_session.poll_stop_request()
+                if stop_req is not None:
+                    raise RuntimeError(f"watchdog_stop:{stop_req.reason}")
+
+            result = {"n": 0, "steps": []}
+            reason = "success"
+            try:
+                result = runner.run_episode(env, max_steps=args.steps, on_step=record_step)
+                if result["steps"]:
+                    last = result["steps"][-1]["info"]
+                    fault = str(last.get("fault_code", "NONE"))
+                    if "ESTOP" in fault.upper():
+                        reason = "estop"
+                    elif last.get("terminated") and float(result["steps"][-1]["reward"]) < 0:
+                        reason = "failure"
+                hil_session.record_event(
+                    ResultEvent(
+                        episode_id=episode_id,
+                        event_type=reason,
+                        source="eval_act_execute_first",
+                        stamps=now_stamps(),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                reason = "estop" if "estop" in str(exc).lower() else "fault"
+                hil_session.record_event(
+                    ResultEvent(
+                        episode_id=episode_id,
+                        event_type=reason,
+                        source="eval_act_execute_first",
+                        stamps=now_stamps(),
+                        payload={"error": str(exc)},
+                    )
+                )
+                raise
+            finally:
+                replay_writer.close()
+                hil_session.request_stop(episode_id, reason=reason)
+                final = hil_session.wait_finalized(episode_id, timeout_s=60.0)
+                summary["hil_session_state"] = final.session_state
+                summary["hil_export_status"] = final.replay_export_status
+                summary["hil_result_type"] = final.result_type
+                if final.session_state in FINALIZED_OK:
+                    export = hil_session.publish_replay(episode_id)
+                    summary["hil_publish"] = export.to_dict()
+                    summary["replay_path"] = export.path
+                else:
+                    summary["replay_path"] = str(hil_cfg.quarantine_dir / episode_id)
+                hil_session.close()
+                hil_session = None
+                replay_writer = None
+
+            summary["steps"] = result["n"]
+            summary["recording_path"] = str(root / "hil_recording.db")
+            summary["discarded_per_step"] = (
+                result["steps"][0]["discarded"] if result["steps"] else None
+            )
+        else:
+            recorder = EpisodeRecorder(args.record_dir, args.record_experiment)
+            replay_writer = HILReplayWriter(args.record_dir, args.record_experiment)
+
+            def record_step(step: dict) -> None:
+                info = step["info"]
+                audit = info.get("action_audit", {})
+                executed = step.get("executed_action") or audit.get("raw_action")
+                policy_action = np.asarray(step["policy_action"], dtype=np.float32).tolist()
+                transition = TransitionRecord(
+                    experiment_id=args.record_experiment,
+                    episode_id=str(info["episode_id"]),
+                    step_id=int(step["step_id"]),
+                    timestamp=float(info["timestamp"]),
+                    action=list(executed) if executed is not None else policy_action,
+                    reward=float(step["reward"]),
+                    reward_source=str(info.get("reward_source", "unknown")),
+                    terminated=bool(step["terminated"]),
+                    truncated=bool(step["truncated"]),
+                    fault_code=str(info.get("fault_code", "UNKNOWN")),
+                    is_intervention=bool(info.get("is_intervention", False)),
+                    action_clipped=bool(info.get("action_clipped", False)),
+                    extras={
+                        "policy_action": policy_action,
+                        "executed_action": executed,
+                        "chunk_len": int(step["chunk_len"]),
+                        "discarded": int(step["discarded"]),
+                        "teleop_source": info.get("teleop_source", "none"),
+                        "teleop_age_s": info.get("teleop_age_s"),
+                        "teleop_raw_action": info.get("teleop_raw_action"),
+                        "teleop_replay_action": info.get("teleop_replay_action"),
+                        "intervention_mask": info.get("intervention_mask"),
+                        "intervention_segment_id": info.get("intervention_segment_id", 0),
+                        "intervention_segment_step": info.get("intervention_segment_step", 0),
+                        "teleop_events": info.get("teleop_events", {}),
+                    },
+                )
+                recorder.log(transition)
+                replay_writer.log_transition(
+                    transition,
+                    observation=step["observation"],
+                    next_observation=step["next_observation"],
+                )
+
+            result = runner.run_episode(env, max_steps=args.steps, on_step=record_step)
+            recorder.close()
+            replay_writer.close()
+            recorder = None
+            replay_writer = None
+            summary["steps"] = result["n"]
+            summary["recording_path"] = str(args.record_dir / args.record_experiment / "transitions.jsonl")
+            summary["replay_path"] = str(args.record_dir / args.record_experiment / "replay")
+            summary["discarded_per_step"] = result["steps"][0]["discarded"] if result["steps"] else None
+            if result["steps"]:
+                summary["last_fault"] = result["steps"][-1]["info"].get("fault_code")
+                summary["last_reward"] = result["steps"][-1]["reward"]
     else:
         # Mock: validate select_action contract with synthetic/training-like obs
         from kuavo_rl.contracts import IMAGE_KEYS, IMAGE_SHAPE_CHW

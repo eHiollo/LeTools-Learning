@@ -308,7 +308,8 @@ class KuavoBaseRosEnv(gym.Env):
 
     def _enter_external_control_mode(self):
         self.robot.set_external_control_arm_mode()
-        print("set_external_control_arm_mode", self.robot_state.arm_control_mode())
+        # Avoid stdout spam every episode reset (collect CLI).
+        log_robot.debug("set_external_control_arm_mode %s", self.robot_state.arm_control_mode())
         if self.direct_to_wbc:
             if self.platform_type in ["4pro","5"]:
                 self._set_direct_to_wbc(1)
