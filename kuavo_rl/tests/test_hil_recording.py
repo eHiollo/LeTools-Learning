@@ -74,6 +74,81 @@ def test_topic_profile_filters_act_vs_vr():
     assert latched.min_hz is None
 
 
+def test_upper_cams_profile_relays_to_vla_canonical_names():
+    root = Path(__file__).resolve().parents[2]
+    profile = root / "configs/rl/hil_topics_real_upper_cams_v001.yaml"
+    resolved = resolve_topics(
+        control_profile="vr_only",
+        profile_path=profile,
+    )
+    record = set(resolved.record_topic_names())
+    assert "/cam_h/color/image_raw/compressed" in record
+    assert "/cam_l/color/image_raw/compressed" in record
+    assert "/cam_r/color/image_raw/compressed" in record
+    assert "/camera/color/image_raw/compressed" not in record
+
+    pairs = dict(resolved.relay_pairs())
+    assert pairs["/camera/color/image_raw/compressed"] == "/cam_h/color/image_raw/compressed"
+    assert (
+        pairs["/left_wrist_camera/color/image_raw/compressed"]
+        == "/cam_l/color/image_raw/compressed"
+    )
+    assert (
+        pairs["/right_wrist_camera/color/image_raw/compressed"]
+        == "/cam_r/color/image_raw/compressed"
+    )
+
+    head = next(t for t in resolved.topics if t.name.endswith("cam_h/color/image_raw/compressed"))
+    assert head.bus_name == "/camera/color/image_raw/compressed"
+    assert head.needs_relay()
+
+
+def test_gate_probes_source_not_canonical_name(tmp_path, ros_clock):
+    from kuavo_rl.hil_recording.gate import RecordGate
+    from kuavo_rl.hil_recording.topics import ResolvedTopics, TopicSpec
+
+    cfg = _cfg(tmp_path)
+    probed: list[str] = []
+
+    def present(name: str) -> bool:
+        probed.append(name)
+        return True
+
+    gate = RecordGate(
+        cfg,
+        HILDatabase(tmp_path / "gate.db"),
+        topic_present=present,
+        ros_master_ok=lambda: True,
+    )
+    resolved = ResolvedTopics(
+        version="t",
+        robot_type="Kuavo",
+        eef_type="leju_claw",
+        control_profile="vr_only",
+        topics=[
+            TopicSpec(
+                name="/cam_h/color/image_raw/compressed",
+                source="/camera/color/image_raw/compressed",
+                role="training",
+                mode="streaming",
+                required_for_start=True,
+                required_for_export=True,
+                min_hz=10,
+                freshness_s=1.0,
+            )
+        ],
+    )
+    report = gate.evaluate(
+        resolved=resolved,
+        session_dir=tmp_path / "s",
+        producers=[],
+        skip_ros=False,
+    )
+    assert report.status == "Pass"
+    assert "/camera/color/image_raw/compressed" in probed
+    assert "/cam_h/color/image_raw/compressed" not in probed
+
+
 def test_illegal_session_transition(tmp_path, ros_clock):
     db = HILDatabase(tmp_path / "t.db")
     db.insert_session(

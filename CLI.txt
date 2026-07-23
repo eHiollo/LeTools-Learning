@@ -6,3 +6,30 @@ rsync -avz --progress \
 rsync -avz --progress \
   /home/fulin/robot-il/LeTools-Learning/data/lerobot/lerobot_merged/ \
   wangjunyang@47.107.131.228:/home/wangjunyang/robot-il/LeTools-Learning/data/lerobot/lerobot_merged/
+
+# ---- 真机采集（上位机三路相机，非底盘 cam2/cam3）----
+# 序列号只写本机环境（~/.bashrc），不要写进仓库。左右手现场确认后设置：
+#   export LEFT_WRIST_CAMERA_SERIAL_NO=<左腕 RealSense SN>
+#   export RIGHT_WRIST_CAMERA_SERIAL_NO=<右腕 RealSense SN>
+# 另开终端启动相机（需已 source 下位机/本机 ROS workspace）：
+#   # 推荐（头相机默认 30Hz；可用 color_fps:=xx 覆盖）：
+#   roslaunch configs/launch/hil_upper_cams.launch
+#   # 或官方 launch（硬编码 60Hz）启完后临时改头相机：
+#   #   rosparam set /camera/camera/color_fps 30 && rosservice call /camera/reboot_device "{}"
+# 验收：
+#   rostopic list | grep -E 'camera/color|left_wrist_camera|right_wrist_camera'
+# 若只有 raw、没有 compressed，可在采集前覆盖：
+#   export KUAVO_HEAD_CAM_TOPIC=/camera/color/image_raw
+#   export KUAVO_WRIST_L_CAM_TOPIC=/left_wrist_camera/color/image_raw
+#   export KUAVO_WRIST_R_CAM_TOPIC=/right_wrist_camera/color/image_raw
+#   export KUAVO_CAM_MSG_TYPE=Image
+
+# 数据采集（注意：先 source bashrc，再 activate；反过来会被切回 base）
+source ~/.bashrc
+conda activate letools-rl
+
+export LD_PRELOAD="/home/leju_kuavo/miniforge3/envs/letools-rl/lib/python3.10/site-packages/torch.libs/libgomp-a49a47f9.so.1.0.0${LD_PRELOAD:+:$LD_PRELOAD}"
+
+python scripts/rl/collect_hil_dataset.py \
+  --config configs/rl/hil_collection_real_v001.yaml \
+  collect --confirm-live --single-episode --operator wjy

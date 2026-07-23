@@ -348,6 +348,18 @@ def load_kuavo_config(config_path: Optional[str] = None) -> KuavoConfig:
     def _resolve_template(value: Any, scope: Dict[str, Any]) -> Any:
         if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
             expr = value[2:-1]
+            # ${ENV:NAME} or ${ENV:NAME:default} — OS env, never hardcode machine serials here.
+            if expr.startswith("ENV:"):
+                rest = expr[4:]
+                if ":" in rest:
+                    name, default = rest.split(":", 1)
+                    return os.environ.get(name, default)
+                name = rest
+                if name not in os.environ:
+                    raise KeyError(
+                        f"Environment variable {name!r} is required for config template {value}"
+                    )
+                return os.environ[name]
             parts = expr.split(".")
             cur: Any = scope
             for part in parts:

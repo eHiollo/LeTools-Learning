@@ -1,0 +1,99 @@
+# Real-robot deploy for upper-machine HIL cameras launched via:
+#   roslaunch dynamic_biped load_robot_head.launch use_orbbec:=true enable_wrist_camera:=true
+#
+# Default topics match that launch (Orbbec head → /camera, RealSense wrists →
+# /left_wrist_camera|/right_wrist_camera). Override per site with env vars — do
+# NOT put camera serial numbers in this repo (serials belong in ~/.bashrc):
+#   KUAVO_HEAD_CAM_TOPIC / KUAVO_WRIST_L_CAM_TOPIC / KUAVO_WRIST_R_CAM_TOPIC
+#   KUAVO_CAM_MSG_TYPE   (CompressedImage | Image)
+#
+# NOT chassis QR cams (/camera/cam2|cam3) and NOT KuavoBrain H.265
+# (/cam_*/color/h265_stream) until a relay is added.
+env:
+  inference_env: real
+  only_arm: true
+  eef_type: leju_claw
+  # Wheel-arm ("轮臂"): joint_q = 4 wheel + 14 arm [4:18] + 2 head.
+  # Override with KUAVO_PLATFORM_TYPE if another body is used.
+  platform_type: "${ENV:KUAVO_PLATFORM_TYPE:5w}"
+  control_mode: joint
+  which_arm: both
+  head_init: [0, 12]
+
+  ros_rate: 10
+  direct_to_wbc: false
+  enable_action_interpolation: true
+  control_rate: 100
+  image_size: [848, 480]
+  depth_range: [0, 1500]
+  obs_key_map:
+    head_cam_h:
+      - "${ENV:KUAVO_HEAD_CAM_TOPIC:/camera/color/image_raw/compressed}"
+      - "${ENV:KUAVO_CAM_MSG_TYPE:CompressedImage}"
+      - 30
+      - "${env.image_size}"
+    wrist_cam_l:
+      - "${ENV:KUAVO_WRIST_L_CAM_TOPIC:/left_wrist_camera/color/image_raw/compressed}"
+      - "${ENV:KUAVO_CAM_MSG_TYPE:CompressedImage}"
+      - 30
+      - "${env.image_size}"
+    wrist_cam_r:
+      - "${ENV:KUAVO_WRIST_R_CAM_TOPIC:/right_wrist_camera/color/image_raw/compressed}"
+      - "${ENV:KUAVO_CAM_MSG_TYPE:CompressedImage}"
+      - 30
+      - "${env.image_size}"
+    joint_q: ["/sensors_data_raw", "sensorsData", 50]
+    rq2f85: ["/gripper/state", "JointState", 10]
+    leju_claw: ["/leju_claw_state", "lejuClawState", 10]
+    qiangnao: ["/dexhand/state", "JointState", 10]
+  arm_state_keys: ["joint_q", "gripper"]
+  ratio: 1.0
+  frame_alignment: false
+  qiangnao_dof_needed: 1
+
+  limits:
+    joint_q:
+      min: [-3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14, -3.14]
+      max: [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
+    gripper:
+      min: [0, 0]
+      max: [1, 1]
+    eef:
+      min: [-1, -1, -1, -3.14, -3.14, -3.14, -1, -1, -1, -3.14, -3.14, -3.14]
+      max: [1, 1, 1, 3.14, 3.14, 3.14, 1, 1, 1, 3.14, 3.14, 3.14]
+    base:
+      min: [-2.0, -2.0, -3.14, 0]
+      max: [2.0, 2.0, 3.14, 1]
+  is_binary: false
+
+inference:
+  go_bag_path: ""
+  policy_type: act
+  pretrained_path: outputs/train/act_your_dataset
+  eval_episodes: 1
+  seed: 42
+  start_seed: 42
+  device: cpu
+  max_episode_steps: 200
+  task_prompt: "robot manipulation"
+  async_inference: false
+  async_control_hz: 0.0
+  async_buffer_size: 50
+  async_low_watermark: 5
+  async_warmup_actions: 1
+  async_action_timeout: 1.0
+  rtc_lite_enabled: false
+  rtc_lite_overlap_steps: 5
+  rtc_lite_freeze_steps: 1
+  rtc_lite_ramp: cosine
+  rtc_lite_max_delay_steps: 3
+  rtc_lite_keep_min_actions: 1
+  rtc_full_enabled: false
+  rtc_full_mode: vjp
+  rtc_full_overlap_steps: 5
+  rtc_full_max_delay_steps: 8
+  rtc_full_debug: false
+  rtc_full_prefix_attention_schedule: exp
+  rtc_full_max_guidance_weight: 5.0
+  rtc_full_frozen_steps: 2
+  rtc_full_ramp_rate: 5.0

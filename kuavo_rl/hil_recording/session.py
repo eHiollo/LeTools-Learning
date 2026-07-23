@@ -42,6 +42,7 @@ from kuavo_rl.hil_recording.quality import run_quality_check, write_quality_repo
 from kuavo_rl.hil_recording.result_events import prefer_result, validate_event
 from kuavo_rl.hil_recording.rosbag_recorder import RecorderHandle, RosbagRecorder
 from kuavo_rl.hil_recording.timebase import now_stamps, sleep_monotonic
+from kuavo_rl.hil_recording.topic_relay import TopicRelayHandle, TopicRelayManager
 from kuavo_rl.hil_recording.topics import ResolvedTopics, resolve_topics
 from kuavo_rl.hil_recording.watchdog import RecorderWatchdog, TopicFreshnessCache, drain_stop_queue
 
@@ -62,12 +63,14 @@ class HILRecordingSession:
         self.gate = gate or RecordGate(config, self.db)
         self.profile_path = profile_path
         self.recorder = RosbagRecorder(config)
+        self.topic_relay = TopicRelayManager()
         self.stop_queue: Queue[StopRequest] = Queue()
         self.freshness = TopicFreshnessCache()
 
         self._producers: list[ProducerInfo] = []
         self._resolved: ResolvedTopics | None = None
         self._handle: RecorderHandle | None = None
+        self._relay_handle: TopicRelayHandle | None = None
         self._watchdog: RecorderWatchdog | None = None
         self._audit: AuditPublisher | None = None
         self._current_episode: str | None = None
@@ -169,9 +172,34 @@ class HILRecordingSession:
             self.db.export_session_json(episode_id, session_dir / "session.json")
             raise RuntimeError(f"gate blocked: {report.reasons}")
 
-        # Start recorder
+        # Relay bus topics → canonical bag names (e.g. /camera → /cam_h) when configured.
+        # Gate already passed on ``source``; dry-run skips live relay processes.
+        relay_pairs = resolved.relay_pairs()
+        if relay_pairs and not self._dry_run:
+            try:
+                self._relay_handle = self.topic_relay.start(
+                    relay_pairs,
+                    log_path=session_dir / "topic_relay.log",
+                )
+            except Exception as exc:
+                stamps = now_stamps()
+                self.db.migrate_session_state(
+                    episode_id,
+                    STATE_FAILED_RECORD,
+                    stamps,
+                    error_message=f"topic_relay_failed: {exc}",
+                )
+                self.db.export_session_json(episode_id, session_dir / "session.json")
+                raise RuntimeError(f"topic relay failed: {exc}") from exc
+
+        # Start recorder (records canonical ``name`` topics)
         topics = resolved.record_topic_names()
-        handle = self.recorder.start(episode_id, topics, dry_run=self._dry_run)
+        try:
+            handle = self.recorder.start(episode_id, topics, dry_run=self._dry_run)
+        except Exception:
+            self.topic_relay.stop(self._relay_handle)
+            self._relay_handle = None
+            raise
         self._handle = handle
         stamps = now_stamps()
         self.db.update_fields(
@@ -189,7 +217,7 @@ class HILRecordingSession:
         self.db.migrate_session_state(episode_id, STATE_RECORDING, stamps)
 
         freshness_map = {
-            t.name: float(t.freshness_s)
+            t.bus_name: float(t.freshness_s)
             for t in resolved.topics
             if t.mode == "streaming" and t.freshness_s is not None and t.applies_to(resolved.control_profile)
         }
@@ -348,6 +376,9 @@ class HILRecordingSession:
                 state="stopped",
                 size_bytes=size,
             )
+        # Stop source→canonical relays after rosbag has flushed.
+        self.topic_relay.stop(self._relay_handle)
+        self._relay_handle = None
 
         # 6) Finalizing async
         stamps2 = now_stamps()

@@ -652,7 +652,7 @@ class KuavoBaseRosEnv(gym.Env):
         obs["observation.state"] = np.concatenate(
             arm_data["left"] + arm_data["right"], axis=0
         )
-        log_robot.info(f"STATE: contained {state_keys}, concated value: {obs['observation.state']}")
+        log_robot.debug(f"STATE: contained {state_keys}, concated value: {obs['observation.state']}")
 
         obs["observation.state"] = torch.from_numpy(obs["observation.state"]).float().unsqueeze(0)
         return obs    

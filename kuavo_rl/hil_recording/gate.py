@@ -102,23 +102,25 @@ class RecordGate:
             if not self._ros_master_ok():
                 reasons.append("ros_master_unavailable")
             for spec in resolved.for_start():
+                # Probe the live bus topic (source), not the canonical bag name.
+                bus = spec.bus_name
                 if spec.mode == "latched":
-                    if not self._latched_seen(spec.name):
-                        latched_missing.append(spec.name)
-                        reasons.append(f"latched_missing:{spec.name}")
+                    if not self._latched_seen(bus):
+                        latched_missing.append(bus)
+                        reasons.append(f"latched_missing:{bus}")
                     continue
                 # streaming
-                if not self._topic_present(spec.name):
-                    missing.append(spec.name)
-                    reasons.append(f"missing_topic:{spec.name}")
+                if not self._topic_present(bus):
+                    missing.append(bus)
+                    reasons.append(f"missing_topic:{bus}")
                     continue
                 if spec.min_hz is not None:
-                    rate = self._topic_rate_hz(spec.name)
+                    rate = self._topic_rate_hz(bus)
                     # None = no heavy probe injected; presence already passed.
                     if rate is not None and rate < float(spec.min_hz):
-                        low_rate.append(spec.name)
+                        low_rate.append(bus)
                         reasons.append(
-                            f"low_rate:{spec.name} rate={rate} min={spec.min_hz}"
+                            f"low_rate:{bus} rate={rate} min={spec.min_hz}"
                         )
 
         producer_dicts = [{"name": p.name, "pid": p.pid, "kind": p.kind} for p in producers]

@@ -11,13 +11,21 @@ import sys
 from kuavo_deploy.config import KuavoConfig
 from sensor_msgs.msg import CompressedImage, Image, JointState
 from torchvision.transforms.functional import to_tensor
-from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import sensorsData,lejuClawState
+# Prefer live-robot kuavo_msgs (PYTHONPATH workspace). SDK-bundled sensorsData
+# often has a different MD5 and will never receive /sensors_data_raw.
+try:
+    from kuavo_msgs.msg import sensorsData, lejuClawState
+except ImportError:  # pragma: no cover
+    from kuavo_humanoid_sdk.msg.kuavo_msgs.msg import sensorsData, lejuClawState
 from kuavo_deploy.utils.signal_controller import ControlSignalManager
 from kuavo_deploy.utils.logging_utils import setup_logger
 from kuavo_deploy.utils.ros_manager import ROSManager
 from kuavo_data.common.config_platform import get_arm_joint_slice
 
 log_robot = setup_logger("robot")
+
+# Idle leju claw often has a publisher but no stream; seed so wait_buffer_ready can finish.
+_IDLE_SEED_KEYS = frozenset({"gripper", "leju_claw", "rq2f85", "qiangnao"})
 
 
 class ObsBuffer:
@@ -278,10 +286,12 @@ class ObsBuffer:
     def stop_subscribers(self):
         self.ros_manager.close()
 
-    def wait_buffer_ready(self):
+    def wait_buffer_ready(self, *, idle_seed_after_s: float = 3.0):
         progress = {k: 0 for k in self.obs_key_map}
         total = {k: v["frequency"] for k, v in self.obs_key_map.items()}
-        last_log_time = 0
+        last_log_time = 0.0
+        started = time.time()
+        seeded = set()
 
         while not self.obs_buffer_is_ready():
             if not self.control_signal_manager.check_control_signals():
@@ -289,14 +299,35 @@ class ObsBuffer:
                 sys.exit(1)
 
             now = time.time()
-            # 每隔 1 秒打印一次日志
-            if now - last_log_time > 0.2:
+            if now - started >= idle_seed_after_s:
+                for k in self.obs_key_map:
+                    if k in seeded:
+                        continue
+                    if k not in _IDLE_SEED_KEYS:
+                        continue
+                    if len(self.obs_buffer_data[k]["data"]) > 0:
+                        continue
+                    # both-arm leju_claw / rq2f85 → 2 values in [0, 1]
+                    fill = [0.0, 0.0]
+                    need = int(total[k])
+                    ts = now
+                    for _ in range(need):
+                        self._append_data(k, list(fill), ts)
+                    seeded.add(k)
+                    log_robot.warning(
+                        f"No messages for '{k}' after {idle_seed_after_s:.0f}s; "
+                        f"seeded {need} zero frames so collect can start"
+                    )
+
+            if now - last_log_time > 2.0:
                 logs = []
                 for k in progress:
                     new_len = len(self.obs_buffer_data[k]["data"])
                     progress[k] = new_len
-                    logs.append(f"{k}: {new_len}/{total[k]}")
-                log_robot.info(" | ".join(logs))
+                    if new_len < total[k]:
+                        logs.append(f"{k}: {new_len}/{total[k]}")
+                if logs:
+                    log_robot.info("waiting buffers: " + " | ".join(logs))
                 last_log_time = now
 
             time.sleep(0.1)

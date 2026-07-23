@@ -9,6 +9,7 @@ Mirrors ``lerobot-record`` UX:
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import signal
@@ -115,15 +116,41 @@ class LiveCollectResult:
         }
 
 
+def _patch_kuavo_msgs_for_sdk() -> None:
+    """Keep robot workspace ``kuavo_msgs`` (matching /sensors_data_raw MD5) while
+    exposing any newer SDK-only symbols (e.g. footPose6D, stairAlignmentSrv)
+    the SDK imports at module level.
+    """
+    for sub in ("msg", "srv"):
+        try:
+            robot_mod = importlib.import_module(f"kuavo_msgs.{sub}")
+        except ImportError:
+            continue
+        try:
+            sdk_mod = importlib.import_module(f"kuavo_humanoid_sdk.msg.kuavo_msgs.{sub}")
+        except ImportError:
+            continue
+        for name in dir(sdk_mod):
+            if name.startswith("_"):
+                continue
+            if not hasattr(robot_mod, name):
+                setattr(robot_mod, name, getattr(sdk_mod, name))
+
+
 def _make_kuavo_gym(deploy_config: Path, *, max_episode_steps: int):
+    # Must run BEFORE importing kuavo_deploy.kuavo_env: that import pulls in the
+    # SDK, which does `from kuavo_msgs.msg import footPose6D` at module level.
+    _patch_kuavo_msgs_for_sdk()
+
     import gymnasium as gym
     import kuavo_deploy.kuavo_env  # noqa: F401
     from kuavo_deploy.config import load_kuavo_config
 
     deploy_cfg = load_kuavo_config(str(deploy_config))
-    if deploy_cfg.env.env_name != "Kuavo-Sim":
+    allowed = {"Kuavo-Sim", "Kuavo-Real"}
+    if deploy_cfg.env.env_name not in allowed:
         raise RuntimeError(
-            f"deploy env_name={deploy_cfg.env.env_name!r}; expected Kuavo-Sim"
+            f"deploy env_name={deploy_cfg.env.env_name!r}; expected one of {sorted(allowed)}"
         )
     return gym.make(
         deploy_cfg.env.env_name,
@@ -201,7 +228,7 @@ class VrCollectRuntime:
             env_cfg.safety.max_consecutive_clips = 0
 
         _quiet_robot_logs()
-        _say("Connecting Kuavo-Sim + Quest teleop (one-time setup)…")
+        _say("Connecting Kuavo env + Quest teleop (one-time setup)…")
         _say("Episode end = B only (no step/time / consecutive-clip cutoff)")
         kuavo_gym = _make_kuavo_gym(deploy_config, max_episode_steps=self.max_steps)
         teleop_raw = raw.get("teleop", {}) if isinstance(raw, dict) else {}

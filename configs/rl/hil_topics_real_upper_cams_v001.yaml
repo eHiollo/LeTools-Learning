@@ -1,0 +1,139 @@
+# Real-robot HIL topics for upper-machine cameras from:
+#   roslaunch dynamic_biped load_robot_head.launch use_orbbec:=true enable_wrist_camera:=true
+#
+# Bag / export names match the VLA reference layout (/cam_h|/cam_l|/cam_r).
+# Live bus topics stay on the launch defaults (/camera, /left_wrist_camera,
+# /right_wrist_camera) via ``source:`` — HILRecordingSession relays source→name
+# before rosbag record. No lower-machine / driver topic rename required.
+#
+# Override live bus names with KUAVO_*_CAM_TOPIC if a site differs. Camera
+# serials stay in the shell env / ~/.bashrc, never in this file.
+#
+# Chassis /camera/cam2|cam3 are NOT HIL cams.
+version: hil-real-upper-cams-v001
+robot_type: Kuavo
+eef_type: leju_claw
+control_profile: vr_only
+topics:
+  - name: /sensors_data_raw
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 25
+    freshness_s: 1.0
+  - name: /joint_cmd
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 25
+    freshness_s: 1.0
+  - name: /tf
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 2.0
+  - name: /tf_static
+    role: calibration
+    mode: latched
+    required_for_start: true
+    required_for_export: true
+  - name: /kuavo_arm_traj
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+    profiles: [act_vr, vr_only]
+    min_hz: 25
+    freshness_s: 1.0
+  - name: /ik_fk_result/input_pos
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    profiles: [act_vr, vr_only]
+  - name: /ik_fk_result/eef_pose
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    profiles: [act_vr, vr_only]
+  - name: /leju_claw_state
+    role: training
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+    min_hz: 5
+    freshness_s: 5.0
+  - name: /leju_claw_command
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+  # Canonical bag names = VLA reference; source = live driver topics.
+  - name: /cam_h/color/image_raw/compressed
+    source: "${ENV:KUAVO_HEAD_CAM_TOPIC:/camera/color/image_raw/compressed}"
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 1.0
+  - name: /cam_l/color/image_raw/compressed
+    source: "${ENV:KUAVO_WRIST_L_CAM_TOPIC:/left_wrist_camera/color/image_raw/compressed}"
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 1.0
+  - name: /cam_r/color/image_raw/compressed
+    source: "${ENV:KUAVO_WRIST_R_CAM_TOPIC:/right_wrist_camera/color/image_raw/compressed}"
+    role: training
+    mode: streaming
+    required_for_start: true
+    required_for_export: true
+    min_hz: 10
+    freshness_s: 1.0
+  # Optional raw mirrors under the same canonical names (not required to start).
+  - name: /cam_h/color/image_raw
+    source: /camera/color/image_raw
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+  - name: /cam_l/color/image_raw
+    source: /left_wrist_camera/color/image_raw
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+  - name: /cam_r/color/image_raw
+    source: /right_wrist_camera/color/image_raw
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: false
+  - name: /hil/transition_audit
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+  - name: /hil/result_event
+    role: audit
+    mode: streaming
+    required_for_start: false
+    required_for_export: true
+  - name: /kuavo/arm_zeros
+    role: calibration
+    mode: latched
+    required_for_start: false
+    required_for_export: false
+  - name: /kuavo/offset
+    role: calibration
+    mode: latched
+    required_for_start: false
+    required_for_export: false
