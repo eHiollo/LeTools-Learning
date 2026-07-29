@@ -1,0 +1,7 @@
+# Optional deps for Kuavo → RL-100 zarr collection (parallel feature).
+# Does not replace the main project requirements.
+zarr>=2.12,<3
+numcodecs
+PyYAML
+# Optional (better farthest-point sampling); fallback resampler exists without it.
+# fpsample

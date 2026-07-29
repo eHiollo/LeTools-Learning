@@ -1,0 +1,57 @@
+# Parallel RL-100 zarr collection config (does NOT replace HIL topic profiles).
+#
+# Output layout:
+#   data/rl100/<task>/episodes/*.npz   # per-episode staging
+#   data/rl100/<task>/demo.zarr          # merged RL-100 dataset
+
+task: kuavo_demo
+output_root: data/rl100
+zarr_name: demo.zarr
+overwrite: false
+
+# Keep failures by default (HIL B double-click). Use CLI --only-success to drop them.
+only_success: false
+
+fps: 10
+num_points: 1024
+state_dim: 16
+action_dim: 16
+
+# RL-100-style sparse terminal reward shaping
+lambda_penalty: 0.05
+smooth_penalty: 0.01
+max_episode_len: 2000
+
+base_frame: base_link
+workspace:
+  x_range: [0.0, 1.2]
+  y_range: [-0.6, 0.6]
+  z_range: [0.0, 1.4]
+
+# Three cameras fused into one (1024, 3) point cloud — RL-100 schema.
+cameras:
+  - name: head_cam_h
+    depth_topic: /cam_h/depth/image_raw
+    camera_info_topic: /cam_h/depth/camera_info
+    frame_id: cam_h_depth_optical_frame
+    enabled: true
+  - name: wrist_cam_l
+    depth_topic: /cam_l/depth/image_rect_raw
+    camera_info_topic: /cam_l/depth/camera_info
+    frame_id: cam_l_depth_optical_frame
+    enabled: true
+  - name: wrist_cam_r
+    depth_topic: /cam_r/depth/image_rect_raw
+    camera_info_topic: /cam_r/depth/camera_info
+    frame_id: cam_r_depth_optical_frame
+    enabled: true
+
+joystick_topic: /quest_joystick_data
+arm_traj_topic: /kuavo_arm_traj
+sensors_topic: /sensors_data_raw
+
+# Live collect safety / env wiring (reuse existing Kuavo sim path by default)
+confirm_live: false
+shadow_mode: true
+deploy_config: configs/deploy/total/deploy_sim_mujoco_native_cams.yaml
+env_config: configs/rl/kuavo_hilserl_sim.yaml
