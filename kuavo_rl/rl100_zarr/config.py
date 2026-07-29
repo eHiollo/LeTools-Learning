@@ -10,6 +10,17 @@ import yaml
 
 from kuavo_rl.rl100_zarr.schema import ACTION_DIM, NUM_POINTS, STATE_DIM
 
+# Align with HIL real collect: B ends episodes; these are soft safety ceilings only.
+LIVE_SAFETY_MAX_STEPS = 100_000
+LIVE_SAFETY_MAX_DURATION_S = 86_400.0
+
+# Same topics as kuavo_deploy obs_buffer / 模仿学习真机深度。
+_REAL_DEPTH = {
+    "head": "/cam_h/depth/image_raw/compressedDepth",
+    "wrist_l": "/cam_l/depth/image_rect_raw/compressedDepth",
+    "wrist_r": "/cam_r/depth/image_rect_raw/compressedDepth",
+}
+
 
 @dataclass
 class CameraPCConfig:
@@ -18,38 +29,43 @@ class CameraPCConfig:
     camera_info_topic: str
     frame_id: str = ""
     enabled: bool = True
+    # image = sensor_msgs/Image; compressed_depth = sensor_msgs/CompressedImage (PNG)
+    depth_msg_type: str = "compressed_depth"
 
 
 def default_cameras() -> list[CameraPCConfig]:
-    """Three-cam depth topics (Brain / kuavo-ros-control naming)."""
+    """Three-cam depth topics aligned with Kuavo real / kuavo_deploy."""
     return [
         CameraPCConfig(
             name="head_cam_h",
-            depth_topic="/cam_h/depth/image_raw",
+            depth_topic=_REAL_DEPTH["head"],
             camera_info_topic="/cam_h/depth/camera_info",
             frame_id="cam_h_depth_optical_frame",
             enabled=True,
+            depth_msg_type="compressed_depth",
         ),
         CameraPCConfig(
             name="wrist_cam_l",
-            depth_topic="/cam_l/depth/image_rect_raw",
+            depth_topic=_REAL_DEPTH["wrist_l"],
             camera_info_topic="/cam_l/depth/camera_info",
             frame_id="cam_l_depth_optical_frame",
             enabled=True,
+            depth_msg_type="compressed_depth",
         ),
         CameraPCConfig(
             name="wrist_cam_r",
-            depth_topic="/cam_r/depth/image_rect_raw",
+            depth_topic=_REAL_DEPTH["wrist_r"],
             camera_info_topic="/cam_r/depth/camera_info",
             frame_id="cam_r_depth_optical_frame",
             enabled=True,
+            depth_msg_type="compressed_depth",
         ),
     ]
 
 
 @dataclass
 class RL100CollectConfig:
-    task: str = "kuavo_demo"
+    task: str = "box_to_chest_v1"
     output_root: str = "data/rl100"
     zarr_name: str = "demo.zarr"
     overwrite: bool = False
@@ -69,8 +85,15 @@ class RL100CollectConfig:
     sensors_topic: str = "/sensors_data_raw"
     confirm_live: bool = False
     shadow_mode: bool = True
-    deploy_config: str = "configs/deploy/total/deploy_sim_mujoco_native_cams.yaml"
-    env_config: str = "configs/rl/kuavo_hilserl_sim.yaml"
+    # Real-robot HIL collect wiring (same as hil_collection_real_v001).
+    deploy_config: str = "configs/deploy/total/deploy_total.yaml"
+    env_config: str = "configs/rl/kuavo_hilserl_real_mvp.yaml"
+    require_all_cameras: bool = True
+    fail_on_empty_pointcloud: bool = True
+    min_workspace_points: int = 32
+    # Soft ceilings; episode ends on B (success/fail) like HIL VR collect.
+    live_max_steps: int = LIVE_SAFETY_MAX_STEPS
+    live_max_duration_s: float = LIVE_SAFETY_MAX_DURATION_S
 
     def output_dir(self) -> Path:
         return Path(self.output_root) / self.task
@@ -112,11 +135,12 @@ class RL100CollectConfig:
                     camera_info_topic=str(c["camera_info_topic"]),
                     frame_id=str(c.get("frame_id", "")),
                     enabled=bool(c.get("enabled", True)),
+                    depth_msg_type=str(c.get("depth_msg_type", "compressed_depth")),
                 )
                 for c in cams_raw
             ]
         return cls(
-            task=str(raw.get("task", "kuavo_demo")),
+            task=str(raw.get("task", "box_to_chest_v1")),
             output_root=str(raw.get("output_root", "data/rl100")),
             zarr_name=str(raw.get("zarr_name", "demo.zarr")),
             overwrite=bool(raw.get("overwrite", False)),
@@ -137,12 +161,18 @@ class RL100CollectConfig:
             confirm_live=bool(raw.get("confirm_live", False)),
             shadow_mode=bool(raw.get("shadow_mode", True)),
             deploy_config=str(
-                raw.get(
-                    "deploy_config",
-                    "configs/deploy/total/deploy_sim_mujoco_native_cams.yaml",
-                )
+                raw.get("deploy_config", "configs/deploy/total/deploy_total.yaml")
             ),
-            env_config=str(raw.get("env_config", "configs/rl/kuavo_hilserl_sim.yaml")),
+            env_config=str(
+                raw.get("env_config", "configs/rl/kuavo_hilserl_real_mvp.yaml")
+            ),
+            require_all_cameras=bool(raw.get("require_all_cameras", True)),
+            fail_on_empty_pointcloud=bool(raw.get("fail_on_empty_pointcloud", True)),
+            min_workspace_points=int(raw.get("min_workspace_points", 32)),
+            live_max_steps=int(raw.get("live_max_steps", LIVE_SAFETY_MAX_STEPS)),
+            live_max_duration_s=float(
+                raw.get("live_max_duration_s", LIVE_SAFETY_MAX_DURATION_S)
+            ),
         )
 
 

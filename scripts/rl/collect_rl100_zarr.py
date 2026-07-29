@@ -4,12 +4,12 @@
 Examples::
 
   # Offline smoke: write a tiny zarr from synthetic episodes
-  python scripts/rl/collect_rl100_zarr.py smoke --task kuavo_demo
+  python scripts/rl/collect_rl100_zarr.py smoke --task box_to_chest_v1
 
   # Merge staged episode NPZs into data/rl100/<task>/demo.zarr
   python scripts/rl/collect_rl100_zarr.py build --config configs/rl/rl100_zarr_collect.yaml
 
-  # Live VR collect (requires ROS + depth/tf + --confirm-live)
+  # Live VR collect on real robot (requires ROS + depth/tf + --confirm-live)
   python scripts/rl/collect_rl100_zarr.py collect --config configs/rl/rl100_zarr_collect.yaml --confirm-live
 """
 
@@ -58,6 +58,10 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         "state_dim": cfg.state_dim,
         "action_dim": cfg.action_dim,
         "only_success": cfg.only_success,
+        "deploy_config": cfg.deploy_config,
+        "env_config": cfg.env_config,
+        "require_all_cameras": cfg.require_all_cameras,
+        "fail_on_empty_pointcloud": cfg.fail_on_empty_pointcloud,
         "cameras": [
             {
                 "name": c.name,
@@ -65,6 +69,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
                 "depth_topic": c.depth_topic,
                 "camera_info_topic": c.camera_info_topic,
                 "frame_id": c.frame_id,
+                "depth_msg_type": c.depth_msg_type,
             }
             for c in cfg.cameras
         ],

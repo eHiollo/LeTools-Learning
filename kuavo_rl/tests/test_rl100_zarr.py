@@ -55,6 +55,33 @@ def test_fuse_three_cams_to_rl100_shape():
     assert out.shape == (NUM_POINTS, 3)
 
 
+def test_empty_pointcloud_hard_fail():
+    with pytest.raises(RuntimeError, match="empty after workspace crop"):
+        build_rl100_point_cloud(
+            [np.zeros((0, 3), dtype=np.float32)],
+            num_points=NUM_POINTS,
+            raise_on_empty=True,
+            min_points=32,
+        )
+
+
+def test_default_config_aligns_real_collect():
+    from kuavo_rl.rl100_zarr.config import RL100CollectConfig, load_rl100_collect_config
+
+    cfg = RL100CollectConfig()
+    assert cfg.deploy_config.endswith("deploy_total.yaml")
+    assert cfg.env_config.endswith("kuavo_hilserl_real_mvp.yaml")
+    assert cfg.require_all_cameras is True
+    assert cfg.fail_on_empty_pointcloud is True
+    assert all(c.depth_msg_type == "compressed_depth" for c in cfg.cameras)
+    assert all("compressedDepth" in c.depth_topic for c in cfg.cameras)
+
+    yaml_cfg = load_rl100_collect_config("configs/rl/rl100_zarr_collect.yaml")
+    assert yaml_cfg.task == "box_to_chest_v1"
+    assert "deploy_total.yaml" in yaml_cfg.deploy_config
+    assert yaml_cfg.live_max_steps >= 100_000
+
+
 def test_write_zarr_roundtrip(tmp_path: Path):
     pytest.importorskip("zarr")
     buffers = ZarrEpisodeBuffers()

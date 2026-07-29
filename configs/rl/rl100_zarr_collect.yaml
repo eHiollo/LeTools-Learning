@@ -1,10 +1,13 @@
-# Parallel RL-100 zarr collection config (does NOT replace HIL topic profiles).
+# Parallel RL-100 zarr collection — aligned with real-robot HIL collect.
+#
+# Same deploy/env/teleop wiring as configs/rl/hil_collection_real_v001.yaml.
+# Depth topics match kuavo_deploy obs_buffer compressedDepth.
 #
 # Output layout:
 #   data/rl100/<task>/episodes/*.npz   # per-episode staging
 #   data/rl100/<task>/demo.zarr          # merged RL-100 dataset
 
-task: kuavo_demo
+task: box_to_chest_v1
 output_root: data/rl100
 zarr_name: demo.zarr
 overwrite: false
@@ -29,29 +32,40 @@ workspace:
   z_range: [0.0, 1.4]
 
 # Three cameras fused into one (1024, 3) point cloud — RL-100 schema.
+# Topics = kuavo_deploy CompressedDepth (真机 / 模仿学习常用).
 cameras:
   - name: head_cam_h
-    depth_topic: /cam_h/depth/image_raw
+    depth_topic: /cam_h/depth/image_raw/compressedDepth
     camera_info_topic: /cam_h/depth/camera_info
     frame_id: cam_h_depth_optical_frame
+    depth_msg_type: compressed_depth
     enabled: true
   - name: wrist_cam_l
-    depth_topic: /cam_l/depth/image_rect_raw
+    depth_topic: /cam_l/depth/image_rect_raw/compressedDepth
     camera_info_topic: /cam_l/depth/camera_info
     frame_id: cam_l_depth_optical_frame
+    depth_msg_type: compressed_depth
     enabled: true
   - name: wrist_cam_r
-    depth_topic: /cam_r/depth/image_rect_raw
+    depth_topic: /cam_r/depth/image_rect_raw/compressedDepth
     camera_info_topic: /cam_r/depth/camera_info
     frame_id: cam_r_depth_optical_frame
+    depth_msg_type: compressed_depth
     enabled: true
+
+require_all_cameras: true
+fail_on_empty_pointcloud: true
+min_workspace_points: 32
 
 joystick_topic: /quest_joystick_data
 arm_traj_topic: /kuavo_arm_traj
 sensors_topic: /sensors_data_raw
 
-# Live collect safety / env wiring (reuse existing Kuavo sim path by default)
+# Live collect — real robot (same as hil_collection_real_v001)
 confirm_live: false
 shadow_mode: true
-deploy_config: configs/deploy/total/deploy_sim_mujoco_native_cams.yaml
-env_config: configs/rl/kuavo_hilserl_sim.yaml
+deploy_config: configs/deploy/total/deploy_total.yaml
+env_config: configs/rl/kuavo_hilserl_real_mvp.yaml
+# Soft safety ceilings only; episode ends on B (HIL VR collect pattern)
+live_max_steps: 100000
+live_max_duration_s: 86400

@@ -125,8 +125,20 @@ def build_rl100_point_cloud(
     x_range: tuple[float, float] | None = None,
     y_range: tuple[float, float] | None = None,
     z_range: tuple[float, float] | None = None,
+    raise_on_empty: bool = False,
+    min_points: int = 1,
 ) -> np.ndarray:
-    """Fuse → workspace crop → FPS. Always returns ``(num_points, 3)``."""
+    """Fuse → workspace crop → FPS. Always returns ``(num_points, 3)``.
+
+    When ``raise_on_empty`` is True, refuse to silently pad an all-zero cloud
+    after workspace crop (bad training data on real collect).
+    """
     fused = fuse_point_clouds(clouds)
     cropped = crop_workspace(fused, x_range=x_range, y_range=y_range, z_range=z_range)
+    if raise_on_empty and cropped.shape[0] < int(min_points):
+        raise RuntimeError(
+            f"point cloud empty after workspace crop "
+            f"(got {cropped.shape[0]} < min_points={min_points}; "
+            f"fused={fused.shape[0]}). Check depth topics / TF / workspace ranges."
+        )
     return downsample_fps(cropped, num_points=num_points)
