@@ -241,7 +241,7 @@ def test_pending_review_then_accepted_label_gate(tmp_path, ros_clock):
     assert report.status == EXPORT_PENDING_REVIEW
     pending = cfg.pending_review_dir / eid
     assert (pending / REVIEW_READY_MARKER).exists()
-    assert not (cfg.accepted_replay_dir / eid / TRAIN_READY_MARKER).exists()
+    assert not (cfg.success_dir / eid / TRAIN_READY_MARKER).exists()
 
     orch_cfg = CollectionConfig(root=root, skip_gate_ros=True, dry_run_recorder=True)
     orch = HILCollectionOrchestrator(orch_cfg)
@@ -253,7 +253,7 @@ def test_pending_review_then_accepted_label_gate(tmp_path, ros_clock):
     orch.review_episode(eid, approve=True, reviewer="a")
     good = orch.publish_train_ready(eid)
     assert good["status"] == EXPORT_PUBLISHED
-    accepted = cfg.accepted_replay_dir / eid
+    accepted = cfg.success_dir / eid
     assert (accepted / TRAIN_READY_MARKER).exists()
     assert not pending.exists()
     orch.close()
@@ -375,8 +375,8 @@ def test_dry_run_collect_to_pending_review(tmp_path, ros_clock):
         max_steps=2,
         end_event="right_stick_left",
     )
-    assert out2["status"] == "quarantined_rerecord"
-    assert (root / "quarantine" / "dry_ep2").exists()
+    assert out2["status"] == "discarded_rerecord"
+    assert not (root / "failure" / "dry_ep2").exists()
 
     # C3 report + label/review
     report = orch.collection_report()
@@ -385,7 +385,7 @@ def test_dry_run_collect_to_pending_review(tmp_path, ros_clock):
     orch.review_episode("dry_ep1", approve=True, reviewer="a")
     pub = orch.publish_train_ready("dry_ep1")
     assert pub["status"] == "Published"
-    assert (root / "accepted_replay" / "dry_ep1" / "TRAIN_READY").exists()
+    assert (root / "success" / "dry_ep1" / "TRAIN_READY").exists()
     orch.close()
 
 
@@ -410,7 +410,7 @@ def test_batch_dry_run_with_rerecord_retry(tmp_path, ros_clock):
     # first attempt rerecord (retry), then early_end, then collection_complete stops
     assert out["completed_episodes"] >= 1
     assert (root / "collection_manifest.json").exists()
-    assert any(r["status"] == "quarantined_rerecord" for r in out["results"])
+    assert any(r["status"] == "discarded_rerecord" for r in out["results"])
     assert any(r["status"] == "pending_review" for r in out["results"])
     orch.close()
 
@@ -458,4 +458,40 @@ def test_y_stick_preflight_skips_stick_exclusive(tmp_path):
     assert out["episode_control"] == "quest_y_stick"
     assert out["stick_exclusive"]["status"] == "Skipped"
     assert "Hold Y" in str(out["episode_control_card"])
+    orch.close()
+
+
+def test_a_button_preflight_card(tmp_path):
+    root = tmp_path / "hil"
+    orch = HILCollectionOrchestrator(
+        CollectionConfig(
+            root=root,
+            skip_gate_ros=True,
+            dry_run_recorder=True,
+            episode_control="quest_a_button",
+        )
+    )
+    out = orch.preflight(for_live_collect=True)
+    assert out["status"] == "Pass"
+    assert out["episode_control"] == "quest_a_button"
+    assert out["stick_exclusive"]["status"] == "Skipped"
+    assert "A click" in str(out["episode_control_card"])
+    orch.close()
+
+
+def test_y_button_preflight_card(tmp_path):
+    root = tmp_path / "hil"
+    orch = HILCollectionOrchestrator(
+        CollectionConfig(
+            root=root,
+            skip_gate_ros=True,
+            dry_run_recorder=True,
+            episode_control="quest_y_button",
+        )
+    )
+    out = orch.preflight(for_live_collect=True)
+    assert out["status"] == "Pass"
+    assert out["episode_control"] == "quest_y_button"
+    assert out["stick_exclusive"]["status"] == "Skipped"
+    assert "Y single click" in str(out["episode_control_card"])
     orch.close()

@@ -33,3 +33,32 @@ export LD_PRELOAD="/home/leju_kuavo/miniforge3/envs/letools-rl/lib/python3.10/si
 python scripts/rl/collect_hil_dataset.py \
   --config configs/rl/hil_collection_real_v001.yaml \
   collect --confirm-live --single-episode --operator wjy
+
+# ---- 真机采集（仅头部 Orbbec，腕相机未接）----
+# 控制（quest_y_button）：
+#   Y 单击=开始录制；Y 双击=重录；Y 长按=结束整个采集会话
+#   右摇杆=腰/底盘（不做 episode 控制）
+#   B 短按=成功→success/；B 长按(≥0.8s)=失败→failure/（独立文件夹）
+# 另开终端只起头相机：
+   roslaunch configs/launch/hil_upper_cams.launch enable_wrist_camera:=false
+# 验收：
+   rostopic list | grep '/camera/color'
+# 若只有 raw、没有 compressed：
+#   export KUAVO_HEAD_CAM_TOPIC=/camera/color/image_raw
+#   export KUAVO_CAM_MSG_TYPE=Image
+#
+ source ~/.bashrc && conda activate letools-rl
+ export LD_PRELOAD="/home/leju_kuavo/miniforge3/envs/letools-rl/lib/python3.10/site-packages/torch.libs/libgomp-a49a47f9.so.1.0.0${LD_PRELOAD:+:$LD_PRELOAD}"
+
+ python scripts/rl/collect_hil_dataset.py \
+   --config configs/rl/hil_collection_real_v001.yaml \
+   preflight --for-live-collect
+
+ python scripts/rl/collect_hil_dataset.py \
+   --config configs/rl/hil_collection_real_v001.yaml \
+   collect --confirm-live --operator wjy
+
+ python scripts/rl/collect_hil_dataset.py \
+   --config configs/rl/hil_collection_real_v001.yaml \
+   collect --confirm-live --operator wjy
+

@@ -292,7 +292,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
                         "last_episode_id": last.get("episode_id"),
                         "last_status": last.get("status"),
                         "last_steps": last.get("steps"),
-                        "last_accepted_replay": last.get("accepted_replay"),
+                        "last_success": last.get("success"),
                         "last_train_ready": last.get("train_ready"),
                         "lerobot_dir": summary.get("lerobot_dir"),
                         "lerobot_bag_count": batch_lr.get("bag_count"),
@@ -411,7 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument(
         "--publish-accepted",
         action="store_true",
-        help="After approve, run publish_accepted → accepted_replay/TRAIN_READY",
+        help="After approve, run publish_accepted → success/TRAIN_READY",
     )
     sv.set_defaults(func=cmd_review)
 
@@ -442,7 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument(
         "--staged-only",
         action="store_true",
-        help="Convert existing batch_bags/ only (do not resync from accepted_replay)",
+        help="Convert existing batch_bags/ only (do not resync from success/)",
     )
     se.add_argument(
         "--only-listed",

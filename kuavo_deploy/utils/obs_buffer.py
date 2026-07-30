@@ -27,6 +27,76 @@ log_robot = setup_logger("robot")
 # Idle leju claw often has a publisher but no stream; seed so wait_buffer_ready can finish.
 _IDLE_SEED_KEYS = frozenset({"gripper", "leju_claw", "rq2f85", "qiangnao"})
 
+# Per-camera rotation in deploy obs_key_map handle.params["rotate"]:
+#   90_ccw | 90_cw | 180
+_IMAGE_ROTATE_CODES = {
+    "90_ccw": cv2.ROTATE_90_COUNTERCLOCKWISE,
+    "90_cw": cv2.ROTATE_90_CLOCKWISE,
+    "180": cv2.ROTATE_180,
+}
+
+
+def apply_image_rotate(cv_img: np.ndarray, rotate: str | None) -> np.ndarray:
+    if not rotate:
+        return cv_img
+    code = _IMAGE_ROTATE_CODES.get(str(rotate).lower())
+    if code is None:
+        log_robot.warning(f"Unknown image rotate {rotate!r}, skipping")
+        return cv_img
+    return cv2.rotate(cv_img, code)
+
+
+def resize_image(
+    cv_img: np.ndarray,
+    resize_wh: list[int] | tuple[int, int] | None,
+    *,
+    mode: str = "stretch",
+) -> np.ndarray:
+    """Resize to ``resize_wh`` as OpenCV (width, height).
+
+    ``stretch`` — legacy behavior (may distort aspect ratio).
+    ``cover``   — uniform scale + center crop (keeps aspect ratio).
+    ``contain`` — uniform scale + letterbox padding.
+    """
+    if not resize_wh:
+        return cv_img
+    tw, th = int(resize_wh[0]), int(resize_wh[1])
+    h, w = cv_img.shape[:2]
+    if mode == "stretch" or (tw, th) == (w, h):
+        return cv2.resize(cv_img, (tw, th))
+
+    if mode == "contain":
+        scale = min(tw / w, th / h)
+    elif mode == "cover":
+        scale = max(tw / w, th / h)
+    else:
+        raise ValueError(f"Unknown resize mode {mode!r}")
+
+    nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    resized = cv2.resize(cv_img, (nw, nh))
+    if mode == "contain":
+        canvas = np.zeros((th, tw, cv_img.shape[2]), dtype=cv_img.dtype)
+        x0 = (tw - nw) // 2
+        y0 = (th - nh) // 2
+        canvas[y0 : y0 + nh, x0 : x0 + nw] = resized
+        return canvas
+
+    x0 = max(0, (nw - tw) // 2)
+    y0 = max(0, (nh - th) // 2)
+    return resized[y0 : y0 + th, x0 : x0 + tw]
+
+
+def resolve_image_resize_mode(handle: dict) -> str:
+    params = handle.get("params", {})
+    mode = params.get("resize_mode")
+    if mode:
+        return str(mode).lower()
+    rotate = str(params.get("rotate") or "").lower()
+    if rotate in ("90_ccw", "90_cw"):
+        # Sideways wrist mount: rotation swaps aspect vs head cam target size.
+        return "cover"
+    return "stretch"
+
 
 class ObsBuffer:
     def __init__(
@@ -172,9 +242,12 @@ class ObsBuffer:
                 cv_img = rgb
             else:
                 cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        resize_wh = handle.get("params", {}).get("resize_wh", None)
-        if resize_wh:
-            cv_img = cv2.resize(cv_img, resize_wh)
+        cv_img = apply_image_rotate(cv_img, handle.get("params", {}).get("rotate"))
+        cv_img = resize_image(
+            cv_img,
+            handle.get("params", {}).get("resize_wh"),
+            mode=resolve_image_resize_mode(handle),
+        )
         data = self.img_preprocess(cv_img)
         self._append_data(key, data, msg.header.stamp.to_sec())
 
@@ -199,9 +272,12 @@ class ObsBuffer:
             cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
         elif encoding == "mono8":
             cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-        resize_wh = handle.get("params", {}).get("resize_wh", None)
-        if resize_wh:
-            cv_img = cv2.resize(cv_img, resize_wh)
+        cv_img = apply_image_rotate(cv_img, handle.get("params", {}).get("rotate"))
+        cv_img = resize_image(
+            cv_img,
+            handle.get("params", {}).get("resize_wh"),
+            mode=resolve_image_resize_mode(handle),
+        )
         data = self.img_preprocess(cv_img)
         self._append_data(key, data, msg.header.stamp.to_sec())
 

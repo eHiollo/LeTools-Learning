@@ -32,6 +32,7 @@ from kuavo_rl.hil_recording.models import (
     STATE_FINALIZED_HEALTHY,
 )
 from kuavo_rl.hil_recording.publish_replay import (
+    discard_rerecord_episode,
     publish_accepted,
     publish_pending_review,
     quarantine_episode,
@@ -48,7 +49,7 @@ from kuavo_rl.quest_episode_control import (
     verify_right_stick_exclusive,
 )
 
-# Printed in preflight; keep in sync with ModifierStickDetector.
+# Printed in preflight; pick via episode_control_operator_card().
 EPISODE_CONTROL_OPERATOR_CARD = {
     "mode": "quest_y_stick",
     "mapping": {
@@ -64,7 +65,7 @@ EPISODE_CONTROL_OPERATOR_CARD = {
         },
         {
             "chord": "Hold Y + stick ←",
-            "RECORDING": "rerecord → quarantine (keep evidence) → reset",
+            "RECORDING": "rerecord → discard (not saved) → reset",
         },
         {
             "chord": "Hold Y + stick ↓",
@@ -80,11 +81,11 @@ EPISODE_CONTROL_OPERATOR_CARD = {
             "any": "estop (unchanged)",
         },
         {
-            "chord": "B click / double / long",
+            "chord": "B short press / long press (≥1.2s)",
             "RECORDING": (
                 "only way to keep an episode (auto_accept): "
-                "click=success→accepted_replay; double=failure→accepted_replay; "
-                "hold≥1.2s=abort→quarantine; no step/time timeout"
+                "short=success→success/; long=failure→failure/; "
+                "no step/time timeout"
             ),
         },
     ],
@@ -96,6 +97,114 @@ EPISODE_CONTROL_OPERATOR_CARD = {
     ],
     "note": "Solo 默认 auto_accept：B 即标签+可训练。录制无 step 截止。",
 }
+
+EPISODE_CONTROL_A_BUTTON_CARD = {
+    "mode": "quest_a_button",
+    "mapping": {
+        "A": "right_first_button_pressed (episode control only)",
+        "B": "right_second_button_pressed (labels only)",
+        "right_stick": "not used for episode control (waist/chassis free)",
+    },
+    "actions": [
+        {
+            "chord": "A click",
+            "RESETTING": "start recording",
+            "RECORDING": "ignored — must end with B so every episode has a label",
+        },
+        {
+            "chord": "A double-click",
+            "RECORDING": "rerecord → discard (not saved) → reset",
+        },
+        {
+            "chord": "A long press (≥1.2s)",
+            "RESETTING": "end collection session",
+            "RECORDING": "ignored — press B to finish episode first",
+        },
+        {
+            "chord": "left dual buttons (existing)",
+            "any": "estop (unchanged)",
+        },
+        {
+            "chord": "B short press / long press (≥1.2s)",
+            "RECORDING": (
+                "only way to keep an episode (auto_accept): "
+                "short=success→success/; long=failure→failure/"
+            ),
+        },
+    ],
+    "conflicts_avoided": [
+        "right stick not consumed — chassis/waist teleop unchanged",
+        "B labels unchanged",
+        "triggers / grips unchanged",
+    ],
+    "note": "A 管条目标记节奏；B 管成败标签。右摇杆不再做 episode 控制。",
+}
+
+EPISODE_CONTROL_Y_BUTTON_CARD = {
+    "mode": "quest_y_button",
+    "mapping": {
+        "Y": "left_second_button_pressed (episode control: click/double)",
+        "B": "right_second_button_pressed (labels: short=success, long=failure)",
+        "right_stick": "not used for episode control (waist/chassis free)",
+    },
+    "actions": [
+        {
+            "chord": "Y single click",
+            "RESETTING": "start recording",
+            "RECORDING": "ignored — must end with B",
+        },
+        {
+            "chord": "Y double-click (≤0.4s)",
+            "RECORDING": "rerecord → discard → reset",
+            "RESETTING": "ignored",
+        },
+        {
+            "chord": "Y long press (≥1.2s)",
+            "RESETTING": "end entire collection session",
+            "RECORDING": "ignored — press B to finish episode first",
+        },
+        {
+            "chord": "left dual buttons (existing)",
+            "any": "estop (unchanged)",
+        },
+        {
+            "chord": "B short press",
+            "RECORDING": "success → success/ (train-ready)",
+        },
+        {
+            "chord": "B long press (≥1.2s)",
+            "RECORDING": "failure → failure/ (separate folder, not train-ready)",
+        },
+    ],
+    "conflicts_avoided": [
+        "right stick not consumed — chassis/waist teleop unchanged",
+        "triggers / grips unchanged",
+    ],
+    "note": "Y 管流程；B 管标签。B 短按=成功，B 长按=失败(进 failure/)。",
+}
+
+
+def _patch_long_press_chords(card: dict[str, Any], long_press_s: float) -> dict[str, Any]:
+    import copy
+    import re
+
+    out = copy.deepcopy(card)
+    lp = f"≥{long_press_s:g}s"
+    for action in out.get("actions", []):
+        chord = str(action.get("chord", ""))
+        action["chord"] = re.sub(r"≥[\d.]+s", lp, chord)
+    return out
+
+
+def episode_control_operator_card(mode: str, *, long_press_s: float = 1.0) -> dict[str, Any]:
+    if mode == "quest_a_button":
+        card = dict(EPISODE_CONTROL_A_BUTTON_CARD)
+    elif mode == "quest_y_button":
+        card = dict(EPISODE_CONTROL_Y_BUTTON_CARD)
+    else:
+        card = dict(EPISODE_CONTROL_OPERATOR_CARD)
+    card["mode"] = mode
+    return _patch_long_press_chords(card, long_press_s)
 
 
 def _sha256_path(path: Path) -> str | None:
@@ -148,8 +257,8 @@ class CollectionConfig:
     default_max_duration_s: float = 90.0
     reset_time_s: float = 60.0
     batch_stop_on_quarantine: bool = True
-    # Default: hold Y + right stick. Alt: quest_y_chord / quest_right_stick.
-    episode_control: str = "quest_y_stick"
+    # Default: Y button gestures + stick-down. Alt: quest_a_button / quest_y_stick / quest_y_chord.
+    episode_control: str = "quest_y_button"
     right_stick_trigger_threshold: float = 0.80
     right_stick_rearm_neutral_threshold: float = 0.20
     right_stick_debounce_s: float = 0.25
@@ -157,7 +266,7 @@ class CollectionConfig:
     require_collection_mode_ack: bool = False
     chord_long_press_s: float = 1.0
     auto_start_after_reset: bool = False
-    # Solo / local collect: B end → auto label+review → accepted_replay/TRAIN_READY
+    # Solo / local collect: B end → auto label+review → success/TRAIN_READY
     auto_accept: bool = True
     # After accept: run KuavoBrain CvtRosbag2Lerobot (needs live bag, not dry_run)
     auto_export_lerobot: bool = True
@@ -207,7 +316,7 @@ class CollectionConfig:
             default_max_duration_s=float(col.get("default_max_duration_s", 90)),
             reset_time_s=float(col.get("reset_time_s", 60)),
             batch_stop_on_quarantine=bool(col.get("batch_stop_on_quarantine", True)),
-            episode_control=str(col.get("episode_control", "quest_y_stick")),
+            episode_control=str(col.get("episode_control", "quest_y_button")),
             right_stick_trigger_threshold=float(
                 col.get("right_stick_trigger_threshold", 0.80)
             ),
@@ -293,7 +402,7 @@ class CollectionPhaseState:
 
         if self.phase == PHASE_RECORDING:
             if event.event_type == "right_stick_left":
-                self.phase = PHASE_FINALIZING  # → quarantine rerecord → RESETTING
+                self.phase = PHASE_FINALIZING  # → discard rerecord → RESETTING
             elif event.event_type == "right_stick_right":
                 self.phase = PHASE_FINALIZING  # early_end → pending_review → RESETTING
             elif event.event_type == "right_stick_down":
@@ -347,8 +456,8 @@ class CollectionIndex:
                     "label": label.to_dict() if label else None,
                     "session_dir": row["session_dir"],
                     "pending_review": str(self.root / "pending_review" / eid),
-                    "accepted_replay": str(self.root / "accepted_replay" / eid),
-                    "quarantine": str(self.root / "quarantine" / eid),
+                    "success": str(self.root / "success" / eid),
+                    "failure": str(self.root / "failure" / eid),
                 }
             )
         index = {
@@ -448,8 +557,10 @@ class HILCollectionOrchestrator:
         if for_live_collect and exclusive is not None and exclusive.status == "Block":
             status = "Block"
 
-        card = dict(EPISODE_CONTROL_OPERATOR_CARD)
-        card["mode"] = self.config.episode_control
+        card = episode_control_operator_card(
+            self.config.episode_control,
+            long_press_s=float(self.config.chord_long_press_s),
+        )
         stick_skip_reason = self.config.episode_control
         out = {
             "status": status,
@@ -514,8 +625,8 @@ class HILCollectionOrchestrator:
                 "paths": {
                     "session": snap.session_dir,
                     "pending_review": str(self.recording.pending_review_dir / episode_id),
-                    "accepted": str(self.recording.accepted_replay_dir / episode_id),
-                    "quarantine": str(self.recording.quarantine_dir / episode_id),
+                    "success": str(self.recording.success_dir / episode_id),
+                    "failure": str(self.recording.failure_dir / episode_id),
                 },
             }
         if pending_review:
@@ -639,9 +750,9 @@ class HILCollectionOrchestrator:
         operator: str,
         stop_reason: str,
     ) -> dict[str, Any]:
-        """Solo path: B label → pending → reviewed → accepted_replay/TRAIN_READY.
+        """Solo path: B label → pending → reviewed → success/TRAIN_READY.
 
-        ``abort`` / ``unsafe`` / ``invalid`` still land in quarantine (not train-ready).
+        ``abort`` / ``unsafe`` / ``invalid`` still land in failure/ (not train-ready).
         """
         final_by_stop = {
             "success_button": "success",
@@ -677,7 +788,7 @@ class HILCollectionOrchestrator:
             reviewer=operator,
             require_distinct_reviewer=False,
         )
-        if final in {"abort", "unsafe", "invalid"}:
+        if final in {"abort", "unsafe", "invalid", "failure"}:
             # publish_accepted would quarantine; keep explicit reason
             q = quarantine_episode(
                 self.recording, self.db, episode_id, reason=f"final_label={final}"
@@ -720,7 +831,7 @@ class HILCollectionOrchestrator:
             by_hint[hint] = by_hint.get(hint, 0) + 1
             if (self.recording.pending_review_dir / eid / REVIEW_READY_MARKER).exists():
                 pending_n += 1
-            if (self.recording.accepted_replay_dir / eid / TRAIN_READY_MARKER).exists():
+            if (self.recording.success_dir / eid / TRAIN_READY_MARKER).exists():
                 train_ready_n += 1
         report = {
             "root": str(self.config.root),
@@ -855,16 +966,16 @@ class HILCollectionOrchestrator:
         snap = self.session.wait_finalized(eid, timeout_s=30.0)
 
         if end_event == "right_stick_left":
-            q = quarantine_episode(self.recording, self.db, eid, reason="rerecord")
-            self.index.append_event("export_transition", q.to_dict())
+            disc = discard_rerecord_episode(self.recording, self.db, eid)
+            self.index.append_event("export_transition", disc.to_dict())
             self.index.rebuild_index(self.db)
             return {
-                "status": "quarantined_rerecord",
+                "status": "discarded_rerecord",
                 "episode_id": eid,
                 "session_state": snap.session_state,
                 "stop_reason": stop_reason,
-                "export": q.to_dict(),
-                "accepted_blocked": not (self.recording.accepted_replay_dir / eid).exists(),
+                "export": disc.to_dict(),
+                "accepted_blocked": not (self.recording.success_dir / eid).exists(),
             }
 
         if snap.session_state != STATE_FINALIZED_HEALTHY and not self.config.allow_degraded_export:
@@ -889,9 +1000,9 @@ class HILCollectionOrchestrator:
             "export": pub,
             "pending_review": str(pending),
             "review_ready": (pending / REVIEW_READY_MARKER).exists(),
-            "accepted_blocked": not (self.recording.accepted_replay_dir / eid).exists(),
+            "accepted_blocked": not (self.recording.success_dir / eid).exists(),
             "train_ready_blocked": not (
-                self.recording.accepted_replay_dir / eid / TRAIN_READY_MARKER
+                self.recording.success_dir / eid / TRAIN_READY_MARKER
             ).exists(),
         }
 
@@ -938,7 +1049,7 @@ class HILCollectionOrchestrator:
             )
             results.append(out)
             status = out.get("status")
-            if status == "quarantined_rerecord":
+            if status in {"quarantined_rerecord", "discarded_rerecord"}:
                 # Same episode index, back to RESETTING (next queue event is retry end).
                 self.phase.phase = PHASE_RESETTING
                 continue

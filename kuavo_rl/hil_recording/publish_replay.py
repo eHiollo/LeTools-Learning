@@ -1,4 +1,4 @@
-"""staging → pending_review → accepted_replay atomic publish / quarantine."""
+"""staging → pending_review → success atomic publish / failure."""
 
 from __future__ import annotations
 
@@ -19,6 +19,11 @@ from kuavo_rl.hil_recording.models import (
     FINALIZED_OK,
     REPLAY_SCHEMA_VERSION,
     REVIEW_READY_MARKER,
+    STATE_CANCELED,
+    STATE_DELETED,
+    STATE_FAILED_RECORD,
+    STATE_FAILED_SELF_CHECK,
+    STATE_PREPARING,
     TRAIN_READY_MARKER,
     ExportReport,
 )
@@ -71,6 +76,57 @@ def _staging_has_payload(staging: Path) -> bool:
     return False
 
 
+def discard_rerecord_episode(
+    config: RecordingConfig,
+    db: HILDatabase,
+    episode_id: str,
+) -> ExportReport:
+    """Drop a Y-double-click rerecord attempt — no copy under failure/."""
+    session_dir = config.session_dir(episode_id)
+    for rel in (
+        config.failure_dir / episode_id,
+        config.pending_review_dir / episode_id,
+    ):
+        if rel.exists():
+            shutil.rmtree(rel)
+
+    staging = config.staging_dir(episode_id)
+    if staging.exists():
+        shutil.rmtree(staging)
+    bags = session_dir / "bags"
+    if bags.exists():
+        shutil.rmtree(bags)
+    config.staging_dir(episode_id)
+
+    stamps = now_stamps()
+    row = db.get_session(episode_id)
+    if row is not None:
+        from_state = row["session_state"]
+        if from_state == STATE_PREPARING:
+            db.migrate_session_state(
+                episode_id, STATE_CANCELED, stamps, source="rerecord_discard"
+            )
+        elif from_state in FINALIZED_OK or from_state in {
+            STATE_FAILED_SELF_CHECK,
+            STATE_FAILED_RECORD,
+        }:
+            db.migrate_session_state(
+                episode_id, STATE_DELETED, stamps, source="rerecord_discard"
+            )
+        db.update_fields(
+            episode_id,
+            stop_reason="rerecord",
+            result_type="abort",
+        )
+
+    return ExportReport(
+        episode_id=episode_id,
+        status="Discarded",
+        path=str(session_dir),
+        reasons=["rerecord"],
+    )
+
+
 def quarantine_episode(
     config: RecordingConfig,
     db: HILDatabase,
@@ -81,7 +137,7 @@ def quarantine_episode(
     session_dir = config.session_dir(episode_id)
     staging = session_dir / "staging"
     pending = config.pending_review_dir / episode_id
-    dest = config.quarantine_dir / episode_id
+    dest = config.failure_dir / episode_id
     dest.mkdir(parents=True, exist_ok=True)
 
     # Prefer moving staging; if already in pending_review, move that instead.
@@ -199,7 +255,7 @@ def publish_accepted(
     db: HILDatabase,
     episode_id: str,
 ) -> ExportReport:
-    """Move pending_review → accepted_replay with TRAIN_READY. Requires reviewed label."""
+    """Move pending_review → success with TRAIN_READY. Requires reviewed label."""
     snap = db.snapshot(episode_id)
     if snap.session_state not in FINALIZED_OK:
         return ExportReport(
@@ -250,7 +306,7 @@ def publish_accepted(
             reasons=["pending_review/REVIEW_READY missing"],
         )
 
-    dest = config.accepted_replay_dir / episode_id
+    dest = config.success_dir / episode_id
     stamps = now_stamps()
     (pending / TRAIN_READY_MARKER).write_text(
         json.dumps(

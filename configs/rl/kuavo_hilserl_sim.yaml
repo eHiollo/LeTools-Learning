@@ -19,14 +19,14 @@ env:
     task_text: "将物料框搬运到胸前的目标位置"
     use_robometer: true
     robometer_mode: episode_end
-# Quest B = right_second_button (same as real MVP): click=success, double=failure, hold=abort
+# Quest B = right_second_button (same as real MVP): short press=success, hold >=1.2s=failure
 teleop:
   joystick_topic: /quest_joystick_data
   arm_traj_topic: /kuavo_arm_traj
   teleop_timeout_s: 0.20
   grip_threshold: 0.80
   reward_button: right_second_button_pressed
-  reward_double_press_s: 0.35
+  reward_double_press_s: 0.70
   reward_long_press_s: 1.20
 policy:
   type: gaussian_actor

@@ -4,7 +4,7 @@ Mirrors ``lerobot-record`` UX:
   - one process stays up across many episodes
   - RESET (teleop ok, no write) → RECORD → save → RESET …
   - clear phase lines (not a JSON dump every step)
-  - Y+stick: → early end / start, ← rerecord, ↓ end session
+  - default episode control: A click / double / long (right stick free)
 """
 
 from __future__ import annotations
@@ -34,9 +34,11 @@ from kuavo_rl.hil_recording.models import (
 )
 from kuavo_rl.hil_recording.timebase import now_stamps
 from kuavo_rl.quest_episode_control import (
+    AButtonGestureDetector,
     ModifierStickDetector,
     QuestEpisodeControlEventSource,
     StickEdgeDetector,
+    YButtonGestureDetector,
     load_stick_calibration,
 )
 from kuavo_rl.recording import HILReplayWriter, TransitionRecord
@@ -47,24 +49,38 @@ def _say(msg: str) -> None:
     print(f"[collect] {msg}", flush=True)
 
 
+def _print_controls(episode_control: str, *, long_press_s: float = 1.0) -> None:
+    lp = f"{long_press_s:g}s"
+    _say("========== VR collect (LeRobot-style session) ==========")
+    _say("Hold grip          → move arms (Quest IK)")
+    if episode_control == "quest_y_button":
+        _say("Y single click     → start recording (RESET only)")
+        _say("Y double-click     → rerecord (discard, not saved, back to RESET)")
+        _say(f"Y long press (≥{lp}) → end entire collection session (RESET only)")
+        _say("Right stick        → free for waist/chassis (not episode control)")
+        _say("B short press      → SUCCESS + end → success/ (train-ready)")
+        _say(f"B long press (≥{lp}) → FAILURE + end → failure/")
+    elif episode_control == "quest_a_button":
+        _say("A click            → start recording (RESET only)")
+        _say("A double-click     → rerecord (discard current)")
+        _say(f"A hold ≥{lp}       → end session (only in RESET; finish ep with B first)")
+        _say("Right stick        → waist/chassis only (not episode control)")
+        _say("B short press      → SUCCESS + end → success/ (train-ready)")
+        _say(f"B long press (≥{lp}) → FAILURE + end → failure/")
+    else:
+        _say("Hold Y + stick →   → start recording (RESET only)")
+        _say("Hold Y + stick ←   → rerecord (discard current)")
+        _say(f"Hold Y + stick ↓ (≥{lp}) → end session (only in RESET; finish ep with B first)")
+        _say("B short press      → SUCCESS + end → success/ (train-ready)")
+        _say(f"B long press (≥{lp}) → FAILURE + end → failure/")
+    _say("No step timeout    → every kept episode must end with B")
+    _say("Ctrl-C             → abort current; twice → force quit")
+    _say("=======================================================")
+
+
 # Soft safety only — episodes must end with B (no normal step/time cutoff).
 VR_SAFETY_MAX_STEPS = 100_000
 VR_SAFETY_MAX_DURATION_S = 86_400.0
-
-
-def _print_controls() -> None:
-    _say("========== VR collect (LeRobot-style session) ==========")
-    _say("Hold grip          → move arms (Quest IK)")
-    _say("Hold Y + stick →   → start recording (RESET only)")
-    _say("Hold Y + stick ←   → rerecord (discard current)")
-    _say("Hold Y + stick ↓   → end session (only in RESET; finish ep with B first)")
-    _say("B click            → SUCCESS + end → accepted_replay (train-ready)")
-    _say("B double-click     → FAILURE + end → accepted_replay (train-ready)")
-    _say("B hold ≥1.2s       → ABORT → quarantine (not train-ready)")
-    _say("No step timeout    → every kept episode must end with B")
-    _say("Solo mode          → no offline label/review; B is the label")
-    _say("Ctrl-C             → abort current; twice → force quit")
-    _say("=======================================================")
 
 
 class HoldStatePolicy:
@@ -82,7 +98,7 @@ class LiveCollectResult:
     session_state: str | None = None
     export: dict[str, Any] | None = None
     pending_review: str | None = None
-    accepted_replay: str | None = None
+    success: str | None = None
     lerobot_dir: str | None = None
     review_ready: bool = False
     train_ready: bool = False
@@ -90,7 +106,7 @@ class LiveCollectResult:
     def summary_line(self) -> str:
         path = (
             self.lerobot_dir
-            or self.accepted_replay
+            or self.success
             or self.pending_review
             or (self.export or {}).get("path")
             or "-"
@@ -109,7 +125,7 @@ class LiveCollectResult:
             "session_state": self.session_state,
             "export": self.export,
             "pending_review": self.pending_review,
-            "accepted_replay": self.accepted_replay,
+            "success": self.success,
             "lerobot_dir": self.lerobot_dir,
             "review_ready": self.review_ready,
             "train_ready": self.train_ready,
@@ -231,7 +247,8 @@ class VrCollectRuntime:
         _say("Connecting Kuavo env + Quest teleop (one-time setup)…")
         _say("Episode end = B only (no step/time / consecutive-clip cutoff)")
         kuavo_gym = _make_kuavo_gym(deploy_config, max_episode_steps=self.max_steps)
-        teleop_raw = raw.get("teleop", {}) if isinstance(raw, dict) else {}
+        teleop_raw = dict(raw.get("teleop", {}) or {}) if isinstance(raw, dict) else {}
+        teleop_raw["reward_long_press_s"] = float(self.cfg.chord_long_press_s)
         allowed = {
             k: teleop_raw[k]
             for k in RosTeleopConfig.__dataclass_fields__
@@ -257,9 +274,20 @@ class VrCollectRuntime:
                     calibration=cal,
                 )
             )
+            long_press_s = float(self.cfg.chord_long_press_s)
+            a_btn = AButtonGestureDetector(
+                double_press_s=0.70,
+                long_press_s=long_press_s,
+            )
+            y_btn = YButtonGestureDetector(
+                double_press_s=0.40,
+                long_press_s=long_press_s,
+            )
             self.event_src = QuestEpisodeControlEventSource(
                 mode=self.cfg.episode_control,
                 mod_stick=mod,
+                a_button=a_btn,
+                y_button=y_btn,
                 calibration=cal,
             )
             try:
@@ -459,7 +487,7 @@ class VrCollectRuntime:
                     eid, "failure_candidate", stop_reason="failure_button", actor=operator
                 )
                 stop_reason, result_type = "failure_button", "failure"
-                _say("B×2 → failure — ending episode")
+                _say("B hold → failure — ending episode (→ failure/)")
                 raise RuntimeError("teleop_stop:failure_button")
             if te.get("abort") or te.get("stop"):
                 stop_reason = "abort" if te.get("abort") else "estop"
@@ -472,10 +500,12 @@ class VrCollectRuntime:
                 stop_reason, result_type = "rerecord", "abort"
                 raise RuntimeError("episode_control:rerecord")
             if ev == "right_stick_right":
-                # No unlabeled early-end: every kept episode must end with B.
-                _say("Y+→ ignored while recording — end with B (success/fail/abort)")
+                _say("Y click ignored while recording — end with B (short=success, long=failure)")
             if ev == "right_stick_down":
-                _say("Y+↓ ignored while recording — end episode with B first, then ↓ in RESET")
+                _say(
+                    "Y long press ignored while recording — "
+                    "end episode with B first, then Y long press in RESET"
+                )
             stop_req = orch.session.poll_stop_request()
             if stop_req is not None:
                 stop_reason, result_type = stop_req.reason, "fault"
@@ -489,7 +519,7 @@ class VrCollectRuntime:
                 result_type = "abort"
                 _say(
                     f"Episode stopped by env at step {n_steps} "
-                    f"(fault={fault}, source={src}) — no B label → quarantine"
+                    f"(fault={fault}, source={src}) — no B label → failure/"
                 )
                 raise RuntimeError(f"env_end:{fault}")
 
@@ -525,7 +555,22 @@ class VrCollectRuntime:
         orch.session.request_stop(eid, stop_reason)
         snap = orch.session.wait_finalized(eid, timeout_s=90.0)
 
-        if stop_reason in {"rerecord", "unlabeled_safety_limit", "ctrl_c_abort"} or str(
+        if stop_reason == "rerecord":
+            from kuavo_rl.hil_recording.publish_replay import discard_rerecord_episode
+
+            disc = discard_rerecord_episode(orch.recording, orch.db, eid)
+            orch.index.append_event("export_transition", disc.to_dict())
+            orch.phase.phase = PHASE_RESETTING
+            return LiveCollectResult(
+                status="discarded_rerecord",
+                episode_id=eid,
+                steps=n_steps,
+                stop_reason=stop_reason,
+                session_state=snap.session_state,
+                export=disc.to_dict(),
+            )
+
+        if stop_reason in {"unlabeled_safety_limit", "ctrl_c_abort"} or str(
             stop_reason
         ).startswith("env_end:"):
             from kuavo_rl.hil_recording.publish_replay import quarantine_episode
@@ -562,11 +607,11 @@ class VrCollectRuntime:
             pub = orch.accept_after_collect(
                 eid, operator=operator, stop_reason=stop_reason
             )
-            accepted = orch.recording.accepted_replay_dir / eid
-            train_ready = (accepted / "TRAIN_READY").exists()
-            status = "accepted_replay" if train_ready else str(pub.get("status", "export"))
+            success_path = orch.recording.success_dir / eid
+            train_ready = (success_path / "TRAIN_READY").exists()
+            status = "success" if train_ready else str(pub.get("status", "export"))
             if status == "Quarantined" or pub.get("status") == "quarantined":
-                status = "quarantined"
+                status = "failure"
             # Per-episode: only stage bag into batch_bags/. Convert once at session end.
             if train_ready and getattr(orch.config, "auto_export_lerobot", False):
                 from kuavo_rl.brain_lerobot_export import stage_bag_for_batch
@@ -593,7 +638,7 @@ class VrCollectRuntime:
                 stop_reason=stop_reason,
                 session_state=snap.session_state,
                 export=pub,
-                accepted_replay=str(accepted) if train_ready else None,
+                success=str(success_path) if train_ready else None,
                 lerobot_dir=None,
                 train_ready=train_ready,
             )
@@ -628,7 +673,10 @@ def collect_vr_session(
 ) -> dict[str, Any]:
     """LeRobot-style multi-episode VR collect. Process stays up until ↓ / Ctrl-C / N eps."""
     _quiet_robot_logs()
-    _print_controls()
+    _print_controls(
+        orch.config.episode_control,
+        long_press_s=float(orch.config.chord_long_press_s),
+    )
 
     pf = orch.preflight(for_live_collect=False)
     if pf["status"] == "Block":
@@ -644,6 +692,22 @@ def collect_vr_session(
     )
     use_live = bool(orch.config.live_rosbag if live_rosbag is None else live_rosbag)
     n_target = 1 if single_episode else max(1, int(num_episodes))
+    ec = orch.config.episode_control
+    if ec == "quest_a_button":
+        start_hint = "A click start · A hold end session"
+        start_timeout_hint = "Reset timeout — A click to start, or A hold to quit"
+        complete_hint = "Collection complete (A hold)"
+        next_hint = "Reset the environment (place objects; A click next)"
+    elif ec == "quest_y_button":
+        start_hint = "Y click start · Y hold end session"
+        start_timeout_hint = "Reset timeout — Y click to start, or Y hold to quit"
+        complete_hint = "Collection complete (Y hold)"
+        next_hint = "Reset the environment (place objects; Y click next)"
+    else:
+        start_hint = "Y+→ start · Y+↓ end session"
+        start_timeout_hint = "Reset timeout — tip Y+→ to start, or Y+↓ to quit"
+        complete_hint = "Collection complete (Y+↓)"
+        next_hint = "Reset the environment (place objects; Y+→ next)"
 
     cid = f"{time.strftime('%Y%m%d')}_{orch.config.task_id}_vr"
     orch.ensure_collection_manifest(
@@ -672,19 +736,19 @@ def collect_vr_session(
 
     prev = signal.signal(signal.SIGINT, _on_sigint)
     try:
-        # First RESET: wait for operator to tip Y+→ before episode 1
+        # First RESET: wait for operator start gesture before episode 1
         while completed < n_target and not stop_session:
             _say(
                 f"Reset the environment  "
                 f"(episode {completed + 1}/{n_target})  "
-                f"Y+→ start · Y+↓ end session · reset_timeout={reset_s:.0f}s"
+                f"{start_hint} · reset_timeout={reset_s:.0f}s"
             )
             ev = rt.idle_reset(timeout_s=reset_s, wait_for_start=True)
             if ev == "right_stick_down" or ev == "ctrl_c_abort":
                 _say("End collection (no more episodes)")
                 break
             if ev == "timeout":
-                _say("Reset timeout — tip Y+→ to start, or Y+↓ to quit")
+                _say(start_timeout_hint)
                 # keep waiting in a soft loop until start or quit
                 while True:
                     ev2 = rt.idle_reset(timeout_s=reset_s, wait_for_start=True)
@@ -708,7 +772,7 @@ def collect_vr_session(
             _say(out.summary_line())
 
             if out.stop_reason == "collection_complete":
-                _say("Collection complete (Y+↓)")
+                _say(complete_hint)
                 break
             if out.stop_reason == "rerecord":
                 _say("Re-record episode — back to reset (same slot, not counted)")
@@ -721,7 +785,7 @@ def collect_vr_session(
                 break
             # brief RESET after save (like lerobot: teleop, no write)
             if completed < n_target:
-                _say("Reset the environment (place objects; Y+→ next)")
+                _say(next_hint)
                 # consume remaining reset window until start or end
                 # loop continues at top which waits for start again
     finally:

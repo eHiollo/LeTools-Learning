@@ -197,7 +197,7 @@ def stage_bag_for_batch(
 
 
 def list_train_ready_episode_ids(root: Path) -> list[str]:
-    accepted = Path(root) / "accepted_replay"
+    accepted = Path(root) / "success"
     if not accepted.is_dir():
         return []
     eids: list[str] = []

@@ -1,14 +1,10 @@
-# Real-robot deploy for upper-machine HIL cameras launched via:
-#   roslaunch dynamic_biped load_robot_head.launch use_orbbec:=true enable_wrist_camera:=true
+# Real-robot deploy — head camera only (Orbbec /camera).
+# Launch: roslaunch configs/launch/hil_upper_cams.launch enable_wrist_camera:=false
 #
-# Default topics match that launch (Orbbec head → /camera, RealSense wrists →
-# /left_wrist_camera|/right_wrist_camera). Override per site with env vars — do
-# NOT put camera serial numbers in this repo (serials belong in ~/.bashrc):
-#   KUAVO_HEAD_CAM_TOPIC / KUAVO_WRIST_L_CAM_TOPIC / KUAVO_WRIST_R_CAM_TOPIC
-#   KUAVO_CAM_MSG_TYPE   (CompressedImage | Image)
+# obs_key_map omits wrist cams so wait_buffer_ready does not hang when wrists
+# are unplugged. Override head topic with KUAVO_HEAD_CAM_TOPIC / KUAVO_CAM_MSG_TYPE.
 #
-# NOT chassis QR cams (/camera/cam2|cam3) and NOT KuavoBrain H.265
-# (/cam_*/color/h265_stream) until a relay is added.
+# NOT chassis QR cams (/camera/cam2|cam3) and NOT KuavoBrain H.265.
 env:
   inference_env: real
   only_arm: true
@@ -32,19 +28,6 @@ env:
       - "${ENV:KUAVO_CAM_MSG_TYPE:CompressedImage}"
       - 30
       - "${env.image_size}"
-    # RealSense wrists are mounted sideways; CCW 90° then cover-resize → upright 848×480.
-    wrist_cam_l:
-      - "${ENV:KUAVO_WRIST_L_CAM_TOPIC:/left_wrist_camera/color/image_raw/compressed}"
-      - "${ENV:KUAVO_CAM_MSG_TYPE:CompressedImage}"
-      - 30
-      - "${env.image_size}"
-      - 90_ccw
-    wrist_cam_r:
-      - "${ENV:KUAVO_WRIST_R_CAM_TOPIC:/right_wrist_camera/color/image_raw/compressed}"
-      - "${ENV:KUAVO_CAM_MSG_TYPE:CompressedImage}"
-      - 30
-      - "${env.image_size}"
-      - 90_ccw
     joint_q: ["/sensors_data_raw", "sensorsData", 50]
     rq2f85: ["/gripper/state", "JointState", 10]
     leju_claw: ["/leju_claw_state", "lejuClawState", 10]

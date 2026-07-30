@@ -23,7 +23,7 @@ class RosTeleopConfig:
     abort_button: str | None = None
     abort_buttons: tuple[str, ...] | None = None
     reward_button: str | None = None
-    reward_double_press_s: float = 0.35
+    reward_double_press_s: float = 0.70  # unused; kept for config compat
     reward_long_press_s: float = 1.20
 
 
@@ -49,8 +49,6 @@ class RosTeleopAdapter(TeleopAdapter):
         self._reward_clock = time.monotonic
         self._reward_pressed = False
         self._reward_pressed_at = 0.0
-        self._reward_last_release = 0.0
-        self._reward_click_pending = False
         self._reward_long_fired = False
 
     def start(self) -> None:
@@ -92,8 +90,6 @@ class RosTeleopAdapter(TeleopAdapter):
     def _reset_reward_gesture(self) -> None:
         self._reward_pressed = False
         self._reward_pressed_at = 0.0
-        self._reward_last_release = 0.0
-        self._reward_click_pending = False
         self._reward_long_fired = False
 
     def set_reference_action(self, action: np.ndarray) -> None:
@@ -138,40 +134,30 @@ class RosTeleopAdapter(TeleopAdapter):
     def _reward_button_event(self, pressed: bool) -> tuple[bool, bool, bool]:
         """Return (success, failure, abort) for a single unreserved button.
 
-        A single click becomes success after the double-click window, a double
-        click becomes failure, and a long press becomes abort.  Delaying the
-        single click prevents a double click from being recorded as success.
+        Short press (release before long threshold) → success.
+        Long press (held ≥ reward_long_press_s) → failure.
+        Double-click is not used (avoids mis-labeling).  abort is always False
+        here (use left dual buttons or abort_button config for emergency stop).
         """
         if not self.config.reward_button:
             return False, False, False
         now = float(self._reward_clock())
-        success = failure = abort = False
+        success = failure = False
         if pressed and not self._reward_pressed:
             self._reward_pressed = True
             self._reward_pressed_at = now
             self._reward_long_fired = False
         elif pressed and self._reward_pressed:
             if not self._reward_long_fired and now - self._reward_pressed_at >= self.config.reward_long_press_s:
-                abort = True
+                failure = True
                 self._reward_long_fired = True
-                self._reward_click_pending = False
         elif not pressed and self._reward_pressed:
             self._reward_pressed = False
             held_s = now - self._reward_pressed_at
-            if self._reward_long_fired or held_s >= self.config.reward_long_press_s:
-                abort = not self._reward_long_fired
-                self._reward_long_fired = False
-                self._reward_click_pending = False
-            elif self._reward_click_pending and now - self._reward_last_release <= self.config.reward_double_press_s:
-                failure = True
-                self._reward_click_pending = False
-            else:
-                self._reward_click_pending = True
-                self._reward_last_release = now
-        elif not pressed and self._reward_click_pending and now - self._reward_last_release >= self.config.reward_double_press_s:
-            success = True
-            self._reward_click_pending = False
-        return success, failure, abort
+            if not self._reward_long_fired and held_s < self.config.reward_long_press_s:
+                success = True
+            self._reward_long_fired = False
+        return success, failure, False
 
     def _active_sides(self, msg: Any) -> tuple[bool, bool]:
         left = float(getattr(msg, "left_grip", 0.0)) > self.config.grip_threshold

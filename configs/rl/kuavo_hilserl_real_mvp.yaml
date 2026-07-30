@@ -53,7 +53,7 @@ teleop:
   # Original Quest3 teleop uses grip as per-arm hold-to-control deadman.
   grip_threshold: 0.80
   # Avoid X/A/Y activation, grips/triggers, joysticks and left double-button stop.
-  # Use only B (right_second): click=success, double-click=failure, hold >=1.2s=abort.
+  # Use only B (right_second): short press=success, hold >= reward_long_press_s=failure.
   reward_button: right_second_button_pressed
-  reward_double_press_s: 0.35
-  reward_long_press_s: 1.20
+  reward_double_press_s: 0.70
+  reward_long_press_s: 0.80

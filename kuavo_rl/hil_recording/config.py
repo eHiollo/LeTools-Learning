@@ -49,14 +49,14 @@ class RecordingConfig:
         return d
 
     @property
-    def accepted_replay_dir(self) -> Path:
-        d = self.root_dir / "accepted_replay"
+    def success_dir(self) -> Path:
+        d = self.root_dir / "success"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     @property
-    def quarantine_dir(self) -> Path:
-        d = self.root_dir / "quarantine"
+    def failure_dir(self) -> Path:
+        d = self.root_dir / "failure"
         d.mkdir(parents=True, exist_ok=True)
         return d
 

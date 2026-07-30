@@ -151,11 +151,16 @@ class ConfigEnv:
                 "handle": {"params": {}}
             }
             # 统一规则化参数处理
-            if len(info) == 4 and isinstance(info[3], list):
+            if len(info) >= 4 and isinstance(info[3], list):
                 base["handle"]["params"]["resize_wh"] = info[3]
-            if len(info) == 5 and isinstance(info[3], list) and isinstance(info[4], list):
-                base["handle"]["params"]["resize_wh"] = info[3]
-                base["handle"]["params"]["depth_range"] = info[4]
+            if len(info) == 5 and isinstance(info[3], list):
+                if isinstance(info[4], list):
+                    base["handle"]["params"]["depth_range"] = info[4]
+                elif isinstance(info[4], str):
+                    base["handle"]["params"]["rotate"] = info[4]
+            if len(info) == 6 and isinstance(info[3], list) and isinstance(info[4], str):
+                base["handle"]["params"]["rotate"] = info[4]
+                base["handle"]["params"]["resize_mode"] = info[5]
 
             # 特殊键处理
             if key == "joint_q":

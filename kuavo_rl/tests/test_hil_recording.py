@@ -280,7 +280,7 @@ def test_full_dry_run_publish_path(tmp_path, ros_clock):
     man = json.loads((pending / "publish_manifest.json").read_text())
     assert man["replay_schema_version"] == "hil-replay-v002"
     assert man["export_stage"] == EXPORT_PENDING_REVIEW
-    assert not (cfg.accepted_replay_dir / eid).exists()
+    assert not (cfg.success_dir / eid).exists()
     # training path must not see staging leftovers with data
     staging = cfg.session_dir(eid) / "staging"
     assert not (staging / "transitions.jsonl").exists()
@@ -344,8 +344,8 @@ def test_estop_goes_to_quarantine(tmp_path, ros_clock):
     if final.session_state == STATE_FINALIZED_HEALTHY:
         report = session.publish_replay(eid)
         assert report.status == EXPORT_QUARANTINED
-        assert (cfg.quarantine_dir / eid).exists()
-        assert not (cfg.accepted_replay_dir / eid).exists()
+        assert (cfg.failure_dir / eid).exists()
+        assert not (cfg.success_dir / eid).exists()
     session.close()
 
 

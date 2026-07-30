@@ -66,7 +66,6 @@ def test_ros_teleop_unreserved_b_reward_gestures():
     adapter = RosTeleopAdapter(
         RosTeleopConfig(
             reward_button="right_second_button_pressed",
-            reward_double_press_s=0.35,
             reward_long_press_s=1.20,
         )
     )
@@ -76,30 +75,38 @@ def test_ros_teleop_unreserved_b_reward_gestures():
         adapter._joy_callback(_joy(success=pressed))
         return adapter.poll()
 
-    # Single click emits success only after the double-click window expires.
+    # Short press → success on release.
     poll(True)
     clock[0] = 0.10
-    assert poll(False).success is False
-    clock[0] = 0.46
-    assert poll(False).success is True
-
-    adapter.reset()
-    clock[0] = 1.0
-    poll(True)
-    clock[0] = 1.10
-    poll(False)
-    clock[0] = 1.20
-    poll(True)
-    clock[0] = 1.30
     event = poll(False)
-    assert event.failure is True
-    assert event.success is False
+    assert event.success is True
+    assert event.failure is False
+    assert event.abort is False
 
+    # Long press → failure while held (no success on release).
     adapter.reset()
     clock[0] = 2.0
     poll(True)
-    clock[0] = 3.21
+    clock[0] = 3.30
     event = poll(True)
-    assert event.abort is True
+    assert event.failure is True
     assert event.success is False
+    assert event.abort is False
+    clock[0] = 3.40
+    event = poll(False)
+    assert event.success is False
+    assert event.failure is False
+    assert event.abort is False
+
+    # Double-click does not map to failure (second tap is another short press).
+    adapter.reset()
+    clock[0] = 4.0
+    poll(True)
+    clock[0] = 4.10
+    poll(False)
+    clock[0] = 4.30
+    poll(True)
+    clock[0] = 4.40
+    event = poll(False)
+    assert event.success is True
     assert event.failure is False

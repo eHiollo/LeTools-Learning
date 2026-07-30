@@ -55,7 +55,7 @@ class HILReplayWriter:
 
     Staging layout (``staging_dir`` set — preferred by hil_recording):
       ``<staging_dir>/{transitions.jsonl, frames/}``
-      Training loaders must only read ``accepted_replay/`` after publish.
+      Training loaders must only read ``success/`` after publish.
     """
 
     def __init__(

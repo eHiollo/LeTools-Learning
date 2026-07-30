@@ -130,7 +130,7 @@ def main() -> None:
     parser.add_argument(
         "--hil-recording",
         action="store_true",
-        help="Use HILRecordingSession (staging→accepted_replay, SQLite, dry-run rosbag).",
+        help="Use HILRecordingSession (staging→success, SQLite, dry-run rosbag).",
     )
     parser.add_argument(
         "--hil-recording-live-rosbag",
@@ -371,7 +371,7 @@ def main() -> None:
                     summary["hil_publish"] = export.to_dict()
                     summary["replay_path"] = export.path
                 else:
-                    summary["replay_path"] = str(hil_cfg.quarantine_dir / episode_id)
+                    summary["replay_path"] = str(hil_cfg.failure_dir / episode_id)
                 hil_session.close()
                 hil_session = None
                 replay_writer = None

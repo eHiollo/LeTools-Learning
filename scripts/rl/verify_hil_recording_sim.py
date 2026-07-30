@@ -176,7 +176,7 @@ def main() -> int:
     out["pending_exists"] = pending.exists()
     out["manifest_exists"] = manifest.exists()
     out["review_ready"] = review_ready.exists()
-    out["accepted_blocked"] = not (cfg.accepted_replay_dir / args.episode_id).exists()
+    out["accepted_blocked"] = not (cfg.success_dir / args.episode_id).exists()
     out["transition_lines"] = (
         sum(1 for line in transitions.open() if line.strip()) if transitions.exists() else 0
     )

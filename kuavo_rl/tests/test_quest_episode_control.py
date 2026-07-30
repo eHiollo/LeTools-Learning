@@ -10,6 +10,7 @@ from kuavo_rl.quest_episode_control import (
     MockQuestEpisodeControlEventSource,
     StickAxisCalibration,
     StickEdgeDetector,
+    YButtonGestureDetector,
     infer_calibration_from_samples,
     load_stick_calibration,
     save_stick_calibration,
@@ -167,3 +168,79 @@ def test_y_chord_early_end_rerecord_and_complete():
     assert det.update(y_mod=True, a_key=True, x_key=False) is None
     clock["t"] = 2.1
     assert det.update(y_mod=True, a_key=True, x_key=False) == "right_stick_down"
+
+
+def test_a_button_click_double_and_long():
+    from kuavo_rl.quest_episode_control import AButtonGestureDetector
+
+    clock = {"t": 0.0}
+
+    def _now():
+        return clock["t"]
+
+    det = AButtonGestureDetector(
+        double_press_s=0.70, long_press_s=1.20, _clock=_now
+    )
+
+    # Single click → start after window
+    assert det.update(True) is None
+    clock["t"] = 0.10
+    assert det.update(False) is None
+    clock["t"] = 0.85
+    assert det.update(False) == "right_stick_right"
+
+    # Double click → rerecord
+    clock["t"] = 2.0
+    assert det.update(True) is None
+    clock["t"] = 2.10
+    assert det.update(False) is None
+    clock["t"] = 2.40
+    assert det.update(True) is None
+    clock["t"] = 2.50
+    assert det.update(False) == "right_stick_left"
+
+    # Long press → end session
+    clock["t"] = 4.0
+    assert det.update(True) is None
+    clock["t"] = 5.30
+    assert det.update(True) == "right_stick_down"
+
+
+def test_y_button_click_double_and_long_press():
+    clock = {"t": 0.0}
+
+    def _now():
+        return clock["t"]
+
+    det = YButtonGestureDetector(
+        double_press_s=0.40, long_press_s=1.20, _clock=_now
+    )
+
+    # Y single click → start (after double-click window)
+    assert det.update(y_pressed=True, right_x=0.0, right_y=0.0) is None
+    clock["t"] = 0.10
+    assert det.update(y_pressed=False, right_x=0.0, right_y=0.0) is None
+    clock["t"] = 0.51
+    assert det.update(y_pressed=False, right_x=0.0, right_y=0.0) == "right_stick_right"
+
+    # Y double-click → rerecord
+    clock["t"] = 2.0
+    assert det.update(y_pressed=True, right_x=0.0, right_y=0.0) is None
+    clock["t"] = 2.10
+    assert det.update(y_pressed=False, right_x=0.0, right_y=0.0) is None
+    clock["t"] = 2.30
+    assert det.update(y_pressed=True, right_x=0.0, right_y=0.0) is None
+    clock["t"] = 2.40
+    assert det.update(y_pressed=False, right_x=0.0, right_y=0.0) == "right_stick_left"
+
+    # Y long press → end session
+    clock["t"] = 4.0
+    assert det.update(y_pressed=True, right_x=0.0, right_y=0.0) is None
+    clock["t"] = 5.30
+    assert det.update(y_pressed=True, right_x=0.0, right_y=0.0) == "right_stick_down"
+
+    # Right stick down → ignored
+    clock["t"] = 7.0
+    assert det.update(y_pressed=False, right_x=0.0, right_y=-0.90) is None
+    assert det.update(y_pressed=False, right_x=0.95, right_y=0.0) is None
+    assert det.update(y_pressed=False, right_x=-0.95, right_y=0.0) is None
