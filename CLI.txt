@@ -6,3 +6,34 @@ rsync -avz --progress \
 rsync -avz --progress \
   /home/fulin/robot-il/LeTools-Learning/data/lerobot/lerobot_merged/ \
   wangjunyang@47.107.131.228:/home/wangjunyang/robot-il/LeTools-Learning/data/lerobot/lerobot_merged/
+
+# ============================================================
+# RL-100 zarr 真机采集（upper cams）— 2026-07-30 已验证
+# 头 Orbbec @30Hz；腕 D405 depth-only 640x480@15Hz
+# 不要重复启动 hil_upper_cams.launch
+# ============================================================
+
+# --- 终端 A：相机（只开一次，保持运行）---
+export ROS_MASTER_URI=http://kuavo_master:11311
+export ROS_IP=192.168.26.12
+source /opt/ros/noetic/setup.bash
+source ~/kuavo_ros_application/devel/setup.bash
+cd ~/wjy/robot-il/LeTools-Learning
+export LEFT_WRIST_CAMERA_SERIAL_NO=412622270881
+export RIGHT_WRIST_CAMERA_SERIAL_NO=260522279592
+roslaunch configs/launch/hil_upper_cams.launch
+
+# 确认深度（头~30Hz，腕~15Hz）
+# rostopic hz /camera/depth/image_raw/compressedDepth
+# rostopic hz /left_wrist_camera/depth/image_rect_raw/compressedDepth
+# rostopic hz /right_wrist_camera/depth/image_rect_raw/compressedDepth
+
+# --- 终端 B：采集 ---
+conda activate letools-rl
+cd ~/wjy/robot-il/LeTools-Learning
+bash scripts/rl/run_rl100_zarr_collect.sh preflight --check-ros --timeout-s 10
+# 目标: ros_pointcloud.ok == true
+bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live --build-after
+
+# 输出: data/rl100/box_to_chest_v1/episodes/*.npz → demo.zarr
+# B 单击=success，双击=failure，长按/重录=abort

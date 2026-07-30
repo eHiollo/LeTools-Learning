@@ -1,0 +1,62 @@
+# RL-100 zarr — upper-machine cameras (hil_upper_cams.launch).
+#
+# Topics from Orbbec head (/camera) + RealSense wrists (/left|right_wrist_camera).
+# Use with: roslaunch configs/launch/hil_upper_cams.launch
+
+task: box_to_chest_v1
+output_root: data/rl100
+zarr_name: demo.zarr
+overwrite: false
+only_success: false
+
+fps: 10
+num_points: 1024
+state_dim: 16
+action_dim: 16
+
+lambda_penalty: 0.05
+smooth_penalty: 0.01
+max_episode_len: 2000
+
+base_frame: base_link
+workspace:
+  x_range: [0.0, 1.2]
+  y_range: [-0.6, 0.6]
+  z_range: [0.0, 1.4]
+
+cameras:
+  - name: head_cam_h
+    depth_topic: /camera/depth/image_raw/compressedDepth
+    camera_info_topic: /camera/depth/camera_info
+    frame_id: camera_color_optical_frame
+    depth_msg_type: compressed_depth
+    enabled: true
+  - name: wrist_cam_l
+    depth_topic: /left_wrist_camera/depth/image_rect_raw/compressedDepth
+    camera_info_topic: /left_wrist_camera/depth/camera_info
+    frame_id: left_wrist_camera_depth_optical_frame
+    depth_msg_type: compressed_depth
+    enabled: true
+  - name: wrist_cam_r
+    depth_topic: /right_wrist_camera/depth/image_rect_raw/compressedDepth
+    camera_info_topic: /right_wrist_camera/depth/camera_info
+    frame_id: right_wrist_camera_depth_optical_frame
+    depth_msg_type: compressed_depth
+    enabled: true
+
+require_all_cameras: true
+fail_on_empty_pointcloud: true
+min_workspace_points: 32
+
+joystick_topic: /quest_joystick_data
+arm_traj_topic: /kuavo_arm_traj
+sensors_topic: /sensors_data_raw
+
+confirm_live: false
+shadow_mode: true
+# State-only gym obs (joint+claw). Point clouds come from DepthPointCloudHub below.
+# Do NOT use deploy_total.yaml here — that waits on Brain /cam_h|l|r H.265.
+deploy_config: configs/deploy/total/deploy_real_rl100_upper.yaml
+env_config: configs/rl/kuavo_hilserl_real_mvp.yaml
+live_max_steps: 100000
+live_max_duration_s: 86400

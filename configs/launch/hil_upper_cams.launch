@@ -1,0 +1,65 @@
+<!-- HIL upper-machine cameras.
+     Head: Orbbec @ 30 Hz (color+depth).
+     Wrists: RealSense D405 depth-only @ 15 Hz, 640x480 (both FW support this).
+       - Color disabled (RL-100 zarr only needs depth for point clouds).
+       - initial_reset + respawn to handle D405 nodelet bond-break issue.
+     Serials: LEFT_WRIST_CAMERA_SERIAL_NO / RIGHT_WRIST_CAMERA_SERIAL_NO -->
+<launch>
+  <!-- Head Orbbec -->
+  <arg name="color_fps" default="30"/>
+  <arg name="depth_fps" default="30"/>
+  <!-- Wrists -->
+  <arg name="wrist_fps" default="15"/>
+  <arg name="wrist_width" default="640"/>
+  <arg name="wrist_height" default="480"/>
+  <arg name="enable_wrist_camera" default="true"/>
+  <arg name="with_wrist_camera" default="$(arg enable_wrist_camera)"/>
+
+  <include file="$(find orbbec_camera)/launch/gemini_330_series.launch">
+    <arg name="camera_name" value="camera"/>
+    <arg name="color_fps" value="$(arg color_fps)"/>
+    <arg name="depth_fps" value="$(arg depth_fps)"/>
+  </include>
+
+  <group if="$(arg with_wrist_camera)">
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+      <arg name="camera" value="left_wrist_camera"/>
+      <arg name="tf_prefix" value="left_wrist_camera"/>
+      <arg name="serial_no" value="$(env LEFT_WRIST_CAMERA_SERIAL_NO)"/>
+      <arg name="depth_width" value="$(arg wrist_width)"/>
+      <arg name="depth_height" value="$(arg wrist_height)"/>
+      <arg name="depth_fps" value="$(arg wrist_fps)"/>
+      <arg name="enable_color" value="false"/>
+      <arg name="enable_pointcloud" value="false"/>
+      <arg name="align_depth" value="false"/>
+      <arg name="initial_reset" value="true"/>
+      <arg name="respawn" value="true"/>
+    </include>
+  </group>
+
+  <group if="$(arg with_wrist_camera)">
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+      <arg name="camera" value="right_wrist_camera"/>
+      <arg name="tf_prefix" value="right_wrist_camera"/>
+      <arg name="serial_no" value="$(env RIGHT_WRIST_CAMERA_SERIAL_NO)"/>
+      <arg name="depth_width" value="$(arg wrist_width)"/>
+      <arg name="depth_height" value="$(arg wrist_height)"/>
+      <arg name="depth_fps" value="$(arg wrist_fps)"/>
+      <arg name="enable_color" value="false"/>
+      <arg name="enable_pointcloud" value="false"/>
+      <arg name="align_depth" value="false"/>
+      <arg name="initial_reset" value="true"/>
+      <arg name="respawn" value="true"/>
+    </include>
+  </group>
+
+  <!-- Bridge Orbbec/RealSense into robot TF (RL-100 point cloud). -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="head_camera_to_orbbec"
+        args="0 0 0 0 0 0 head_camera_base camera_link"/>
+  <group if="$(arg with_wrist_camera)">
+    <node pkg="tf2_ros" type="static_transform_publisher" name="left_wrist_camera_to_eef"
+          args="0 0 0 0 0 0 zarm_l7_end_effector left_wrist_camera_link"/>
+    <node pkg="tf2_ros" type="static_transform_publisher" name="right_wrist_camera_to_eef"
+          args="0 0 0 0 0 0 zarm_r7_end_effector right_wrist_camera_link"/>
+  </group>
+</launch>

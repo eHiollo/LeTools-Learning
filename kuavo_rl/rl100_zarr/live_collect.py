@@ -40,6 +40,11 @@ class HoldStatePolicy:
 
 def _make_kuavo_gym(deploy_config: Path, *, max_episode_steps: int):
     """Create Kuavo gym env for real or sim (HIL helper only allows Sim)."""
+    from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
+
+    ensure_foot_pose_6d_msgs()
+    import torch  # noqa: F401 — load before cv_bridge (static TLS on some hosts)
+
     import gymnasium as gym
     import kuavo_deploy.kuavo_env  # noqa: F401
     from kuavo_deploy.config import load_kuavo_config
@@ -50,7 +55,14 @@ def _make_kuavo_gym(deploy_config: Path, *, max_episode_steps: int):
         raise RuntimeError(
             f"deploy env_name={env_name!r}; expected Kuavo-Sim or Kuavo-Real"
         )
+    # Log resolved topics so wrong Brain/upper-cam wiring is obvious immediately.
+    obs_map = getattr(deploy_cfg.env, "obs_key_map", {}) or {}
+    topic_summary = {
+        k: (v.get("topic") if isinstance(v, dict) else v)
+        for k, v in obs_map.items()
+    }
     _say(f"gym.make({env_name}) deploy={deploy_config}")
+    _say(f"obs topics={topic_summary}")
     return gym.make(
         env_name,
         max_episode_steps=int(max_episode_steps),
@@ -60,6 +72,10 @@ def _make_kuavo_gym(deploy_config: Path, *, max_episode_steps: int):
 
 def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     """Long-running VR session: RESET → RECORD → B success/fail → save NPZ."""
+    from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
+
+    ensure_foot_pose_6d_msgs()
+
     if not config.confirm_live:
         raise RuntimeError(
             "refusing live motion without confirm_live=true / --confirm-live"
