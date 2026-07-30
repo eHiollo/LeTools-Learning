@@ -24,11 +24,14 @@ data/rl100/<task>/demo.zarr          # RL-100 training dataset
 | `reward` / `return` / `done` / `timeout` | `(T, 1)` | sparse success + penalties |
 | `meta/episode_ends` | `(E,)` | episode boundaries |
 
-## Labels (same as HIL)
+## Labels（与 main HIL 对齐）
 
-- B click → **success**
-- B double → **failure**（默认保留）
-- B hold / rerecord → **abort**（丢弃）
+- **B 短按** → **success**
+- **B 长按**（≥ `chord_long_press_s`，默认 0.8s）→ **failure**（默认保留）
+- **Y 单击** → 开始录制（仅 RESET）
+- **Y 双击** → rerecord（丢弃当前，回 RESET）
+- **Y 长按** → 结束整场采集（仅 RESET；录制中请先用 B 结束）
+- 右摇杆留给腰/底盘，不占用 episode 控制（`episode_control: quest_y_button`）
 
 ## 相机稳定配置（已验证）
 

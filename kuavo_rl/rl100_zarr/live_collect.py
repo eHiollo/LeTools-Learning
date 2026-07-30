@@ -88,9 +88,11 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     from kuavo_rl.config import ActRunnerConfig, build_env_config_from_dict, load_yaml
     from kuavo_rl.hil_collect_live import _quiet_robot_logs
     from kuavo_rl.quest_episode_control import (
+        AButtonGestureDetector,
         ModifierStickDetector,
         QuestEpisodeControlEventSource,
         StickEdgeDetector,
+        YButtonGestureDetector,
         load_stick_calibration,
     )
     from kuavo_rl.ros_teleop import RosTeleopAdapter, RosTeleopConfig
@@ -105,6 +107,9 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     env_config = Path(config.env_config)
     live_max_steps = max(int(config.live_max_steps), 1)
     live_max_duration_s = float(config.live_max_duration_s)
+    # Align with main HIL: B short=success, B long=failure; Y click/double/long for session.
+    episode_control = str(getattr(config, "episode_control", "quest_y_button") or "quest_y_button")
+    long_press_s = float(getattr(config, "chord_long_press_s", 0.8) or 0.8)
 
     raw = load_yaml(env_config) if env_config.exists() else {"env": {}}
     env_cfg = build_env_config_from_dict(raw)
@@ -119,7 +124,8 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     _quiet_robot_logs()
     kuavo_gym = _make_kuavo_gym(deploy_config, max_episode_steps=live_max_steps)
 
-    teleop_raw = raw.get("teleop", {}) if isinstance(raw, dict) else {}
+    teleop_raw = dict(raw.get("teleop", {}) or {}) if isinstance(raw, dict) else {}
+    teleop_raw["reward_long_press_s"] = long_press_s
     allowed = {
         k: teleop_raw[k]
         for k in RosTeleopConfig.__dataclass_fields__
@@ -155,9 +161,12 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         raise RuntimeError(f"depth/tf preflight failed: {pf}")
 
     cal = load_stick_calibration()
+    mod = ModifierStickDetector(stick=StickEdgeDetector(calibration=cal))
     event_src = QuestEpisodeControlEventSource(
-        mode="quest_y_stick",
-        mod_stick=ModifierStickDetector(stick=StickEdgeDetector(calibration=cal)),
+        mode=episode_control,
+        mod_stick=mod,
+        a_button=AButtonGestureDetector(double_press_s=0.70, long_press_s=long_press_s),
+        y_button=YButtonGestureDetector(double_press_s=0.40, long_press_s=long_press_s),
         calibration=cal,
     )
     try:
@@ -167,21 +176,36 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         event_src = None
 
     results: list[dict[str, Any]] = []
+    lp = f"{long_press_s:g}s"
     _say("========== RL-100 zarr live collect (REAL) ==========")
     _say(f"task={config.task}  staging={episode_dir}")
     _say(f"deploy={deploy_config}  env={env_config}")
+    _say(f"episode_control={episode_control}")
     _say(
         f"episode ceiling steps={live_max_steps} duration_s={live_max_duration_s} "
         f"(B ends episode; defaults match HIL safety)"
     )
-    _say("B click=success  B double=failure  B hold=abort (abort discarded)")
-    _say("Y+stick → start   Y+stick ← rerecord   Y+stick ↓ end session")
+    if episode_control == "quest_y_button":
+        _say("Y single click     → start recording (RESET only)")
+        _say("Y double-click     → rerecord (discard)")
+        _say(f"Y long press (≥{lp}) → end session (RESET only)")
+        _say("Right stick        → free for waist/chassis")
+    elif episode_control == "quest_a_button":
+        _say("A click            → start recording (RESET only)")
+        _say("A double-click     → rerecord")
+        _say(f"A hold ≥{lp}       → end session (RESET only)")
+    else:
+        _say("Hold Y + stick →   → start recording (RESET only)")
+        _say("Hold Y + stick ←   → rerecord")
+        _say(f"Hold Y + stick ↓ (≥{lp}) → end session (RESET only)")
+    _say("B short press      → SUCCESS + end")
+    _say(f"B long press (≥{lp}) → FAILURE + end")
     _say("Failures are staged by default; use build --only-success to drop them")
     _say("====================================================")
 
     try:
         while not rospy.is_shutdown():
-            _say("RESET — teleop ok, not recording. Y+→ to start.")
+            _say("RESET — teleop ok, not recording. Y click to start.")
             # Reset once per idle phase (HIL idle_reset); do NOT reset every tick.
             obs, _ = env.reset()
             teleop.set_reference_action(obs["observation.state"])
@@ -262,7 +286,7 @@ def _record_one_episode(
 
     obs, info = env.reset()
     teleop.set_reference_action(obs["observation.state"])
-    _say(f"RECORD {eid} — end with B success/fail")
+    _say(f"RECORD {eid} — end with B short=success / B long=failure")
 
     dt = 1.0 / max(config.fps, 1.0)
     t0 = time.monotonic()

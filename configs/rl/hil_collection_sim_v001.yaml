@@ -7,9 +7,9 @@ collection:
   default_max_duration_s: 90
   reset_time_s: 60
   batch_stop_on_quarantine: true
-  # Hold Y + right stick (see EPISODE_CONTROL_OPERATOR_CARD). Alt: quest_y_chord
-  episode_control: quest_y_stick
-  chord_long_press_s: 1.0
+  # Align with main: Y click/double/long (stick free for waist/chassis).
+  episode_control: quest_y_button
+  chord_long_press_s: 0.8
   right_stick_trigger_threshold: 0.80
   right_stick_rearm_neutral_threshold: 0.20
   right_stick_debounce_s: 0.25

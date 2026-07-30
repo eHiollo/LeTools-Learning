@@ -48,7 +48,7 @@ from kuavo_rl.quest_episode_control import (
     verify_right_stick_exclusive,
 )
 
-# Printed in preflight; keep in sync with ModifierStickDetector.
+# Printed in preflight; pick via episode_control_operator_card().
 EPISODE_CONTROL_OPERATOR_CARD = {
     "mode": "quest_y_stick",
     "mapping": {
@@ -80,11 +80,11 @@ EPISODE_CONTROL_OPERATOR_CARD = {
             "any": "estop (unchanged)",
         },
         {
-            "chord": "B click / double / long",
+            "chord": "B short press / long press (≥0.8s)",
             "RECORDING": (
                 "only way to keep an episode (auto_accept): "
-                "click=success→accepted_replay; double=failure→accepted_replay; "
-                "hold≥1.2s=abort→quarantine; no step/time timeout"
+                "short=success→accepted_replay; long=failure→accepted_replay; "
+                "no step/time timeout"
             ),
         },
     ],
@@ -96,6 +96,114 @@ EPISODE_CONTROL_OPERATOR_CARD = {
     ],
     "note": "Solo 默认 auto_accept：B 即标签+可训练。录制无 step 截止。",
 }
+
+EPISODE_CONTROL_A_BUTTON_CARD = {
+    "mode": "quest_a_button",
+    "mapping": {
+        "A": "right_first_button_pressed (episode control only)",
+        "B": "right_second_button_pressed (labels only)",
+        "right_stick": "not used for episode control (waist/chassis free)",
+    },
+    "actions": [
+        {
+            "chord": "A click",
+            "RESETTING": "start recording",
+            "RECORDING": "ignored — must end with B so every episode has a label",
+        },
+        {
+            "chord": "A double-click",
+            "RECORDING": "rerecord → quarantine → reset",
+        },
+        {
+            "chord": "A long press (≥0.8s)",
+            "RESETTING": "end collection session",
+            "RECORDING": "ignored — press B to finish episode first",
+        },
+        {
+            "chord": "left dual buttons (existing)",
+            "any": "estop (unchanged)",
+        },
+        {
+            "chord": "B short press / long press (≥0.8s)",
+            "RECORDING": (
+                "only way to keep an episode (auto_accept): "
+                "short=success→accepted_replay; long=failure→accepted_replay"
+            ),
+        },
+    ],
+    "conflicts_avoided": [
+        "right stick not consumed — chassis/waist teleop unchanged",
+        "B labels unchanged",
+        "triggers / grips unchanged",
+    ],
+    "note": "A 管条目标记节奏；B 管成败标签。右摇杆不再做 episode 控制。",
+}
+
+EPISODE_CONTROL_Y_BUTTON_CARD = {
+    "mode": "quest_y_button",
+    "mapping": {
+        "Y": "left_second_button_pressed (episode control: click/double/long)",
+        "B": "right_second_button_pressed (labels: short=success, long=failure)",
+        "right_stick": "not used for episode control (waist/chassis free)",
+    },
+    "actions": [
+        {
+            "chord": "Y single click",
+            "RESETTING": "start recording",
+            "RECORDING": "ignored — must end with B",
+        },
+        {
+            "chord": "Y double-click (≤0.4s)",
+            "RECORDING": "rerecord → quarantine → reset",
+            "RESETTING": "ignored",
+        },
+        {
+            "chord": "Y long press (≥0.8s)",
+            "RESETTING": "end entire collection session",
+            "RECORDING": "ignored — press B to finish episode first",
+        },
+        {
+            "chord": "left dual buttons (existing)",
+            "any": "estop (unchanged)",
+        },
+        {
+            "chord": "B short press",
+            "RECORDING": "success → accepted_replay (train-ready)",
+        },
+        {
+            "chord": "B long press (≥0.8s)",
+            "RECORDING": "failure → accepted_replay (kept unless --only-success)",
+        },
+    ],
+    "conflicts_avoided": [
+        "right stick not consumed — chassis/waist teleop unchanged",
+        "triggers / grips unchanged",
+    ],
+    "note": "Y 管流程；B 管标签。B 短按=成功，B 长按=失败。与 main 对齐。",
+}
+
+
+def _patch_long_press_chords(card: dict[str, Any], long_press_s: float) -> dict[str, Any]:
+    import copy
+    import re
+
+    out = copy.deepcopy(card)
+    lp = f"≥{long_press_s:g}s"
+    for action in out.get("actions", []):
+        chord = str(action.get("chord", ""))
+        action["chord"] = re.sub(r"≥[\d.]+s", lp, chord)
+    return out
+
+
+def episode_control_operator_card(mode: str, *, long_press_s: float = 1.0) -> dict[str, Any]:
+    if mode == "quest_a_button":
+        card = dict(EPISODE_CONTROL_A_BUTTON_CARD)
+    elif mode == "quest_y_button":
+        card = dict(EPISODE_CONTROL_Y_BUTTON_CARD)
+    else:
+        card = dict(EPISODE_CONTROL_OPERATOR_CARD)
+    card["mode"] = mode
+    return _patch_long_press_chords(card, long_press_s)
 
 
 def _sha256_path(path: Path) -> str | None:
@@ -149,7 +257,8 @@ class CollectionConfig:
     reset_time_s: float = 60.0
     batch_stop_on_quarantine: bool = True
     # Default: hold Y + right stick. Alt: quest_y_chord / quest_right_stick.
-    episode_control: str = "quest_y_stick"
+    # Default: Y button gestures (main). Alt: quest_a_button / quest_y_stick / quest_y_chord.
+    episode_control: str = "quest_y_button"
     right_stick_trigger_threshold: float = 0.80
     right_stick_rearm_neutral_threshold: float = 0.20
     right_stick_debounce_s: float = 0.25
@@ -207,7 +316,7 @@ class CollectionConfig:
             default_max_duration_s=float(col.get("default_max_duration_s", 90)),
             reset_time_s=float(col.get("reset_time_s", 60)),
             batch_stop_on_quarantine=bool(col.get("batch_stop_on_quarantine", True)),
-            episode_control=str(col.get("episode_control", "quest_y_stick")),
+            episode_control=str(col.get("episode_control", "quest_y_button")),
             right_stick_trigger_threshold=float(
                 col.get("right_stick_trigger_threshold", 0.80)
             ),
@@ -448,8 +557,10 @@ class HILCollectionOrchestrator:
         if for_live_collect and exclusive is not None and exclusive.status == "Block":
             status = "Block"
 
-        card = dict(EPISODE_CONTROL_OPERATOR_CARD)
-        card["mode"] = self.config.episode_control
+        card = episode_control_operator_card(
+            self.config.episode_control,
+            long_press_s=float(self.config.chord_long_press_s),
+        )
         stick_skip_reason = self.config.episode_control
         out = {
             "status": status,

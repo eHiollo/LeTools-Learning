@@ -94,6 +94,9 @@ class RL100CollectConfig:
     # Soft ceilings; episode ends on B (success/fail) like HIL VR collect.
     live_max_steps: int = LIVE_SAFETY_MAX_STEPS
     live_max_duration_s: float = LIVE_SAFETY_MAX_DURATION_S
+    # Align with main HIL: quest_y_button + B short/long labels.
+    episode_control: str = "quest_y_button"
+    chord_long_press_s: float = 0.8
 
     def output_dir(self) -> Path:
         return Path(self.output_root) / self.task
@@ -173,6 +176,8 @@ class RL100CollectConfig:
             live_max_duration_s=float(
                 raw.get("live_max_duration_s", LIVE_SAFETY_MAX_DURATION_S)
             ),
+            episode_control=str(raw.get("episode_control", "quest_y_button")),
+            chord_long_press_s=float(raw.get("chord_long_press_s", 0.8)),
         )
 
 

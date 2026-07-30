@@ -1,12 +1,12 @@
 """Quest episode control (C1+): read-only ROS source, no robot actions.
 
-Default control is **hold Y + right stick** (modifier gating)::
+Modes::
 
-    Without Y  → stick stays available for waist / chassis (teleop)
-    Hold Y     → stick left/right/down become episode control edges
-
-Also available: ``quest_y_chord`` (Y+A / Y+X face buttons) and legacy
-``quest_right_stick`` (stick-only, needs exclusive ack).
+    quest_a_button   A alone: click=start, double=rerecord, long=end session
+                     (preferred — right stick free for waist/chassis)
+    quest_y_stick    hold Y + right stick →/←/↓
+    quest_y_chord    Y+A / Y+X face chords
+    quest_right_stick bare stick (needs exclusive ack)
 
 Consumes ``/quest_joystick_data`` and emits logical ``EpisodeControlEvent``s.
 Never publishes arm/waist/chassis commands.
@@ -14,8 +14,8 @@ Never publishes arm/waist/chassis commands.
 Kuavo Quest face-button convention (remappable)::
 
     left_first_button  = X
-    left_second_button = Y   # collection modifier (unused by teleop table)
-    right_first_button = A
+    left_second_button = Y
+    right_first_button = A   # episode control in quest_a_button mode
     right_second_button = B  # reserved for success/failure/abort labels
 """
 
@@ -396,6 +396,72 @@ class ButtonChordDetector:
         return event_type
 
 
+@dataclass
+class AButtonGestureDetector:
+    """A-only episode gestures (no stick, no Y). Same timing model as B labels.
+
+    Operator card::
+
+        A click          → start / early_end     (right_stick_right)
+        A double-click   → rerecord              (right_stick_left)
+        A long press     → collection_complete   (right_stick_down)
+
+    B stays free for success / failure / abort. Right stick stays free for
+    waist / chassis teleop.
+    """
+
+    button_attr: str = "right_first_button_pressed"  # A
+    double_press_s: float = 0.70
+    long_press_s: float = 1.20
+    _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
+    _pressed: bool = False
+    _pressed_at: float = 0.0
+    _last_release: float = 0.0
+    _click_pending: bool = False
+    _long_fired: bool = False
+
+    def update_from_msg(self, msg: Any) -> str | None:
+        return self.update(bool(getattr(msg, self.button_attr, False)))
+
+    def update(self, pressed: bool) -> str | None:
+        """Return a logical stick event name, or None."""
+        now = float(self._clock())
+        if pressed and not self._pressed:
+            self._pressed = True
+            self._pressed_at = now
+            self._long_fired = False
+            return None
+        if pressed and self._pressed:
+            if not self._long_fired and now - self._pressed_at >= float(self.long_press_s):
+                self._long_fired = True
+                self._click_pending = False
+                return "right_stick_down"
+            return None
+        if not pressed and self._pressed:
+            self._pressed = False
+            held_s = now - self._pressed_at
+            if self._long_fired or held_s >= float(self.long_press_s):
+                # Long already fired while held, or release after long threshold.
+                fired = not self._long_fired
+                self._long_fired = False
+                self._click_pending = False
+                return "right_stick_down" if fired else None
+            if self._click_pending and now - self._last_release <= float(self.double_press_s):
+                self._click_pending = False
+                return "right_stick_left"
+            self._click_pending = True
+            self._last_release = now
+            return None
+        if (
+            not pressed
+            and self._click_pending
+            and now - self._last_release >= float(self.double_press_s)
+        ):
+            self._click_pending = False
+            return "right_stick_right"
+        return None
+
+
 class MockQuestEpisodeControlEventSource:
     """Inject raw (x,y) samples or logical events for unit tests (no ROS)."""
 
@@ -438,6 +504,72 @@ class MockQuestEpisodeControlEventSource:
         return self._queue.pop(0)
 
 
+@dataclass
+class YButtonGestureDetector:
+    """Y-only episode gestures; right stick stays free for waist/chassis.
+
+    Operator card::
+
+        Y single click   → start / early_end     (right_stick_right)
+        Y double-click   → rerecord              (right_stick_left)
+        Y long press     → collection_complete   (right_stick_down)
+
+    Right stick is not consumed. B stays free for success / failure labels.
+    """
+
+    button_attr: str = "left_second_button_pressed"  # Y
+    double_press_s: float = 0.40
+    long_press_s: float = 1.20
+    _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
+    _pressed: bool = False
+    _pressed_at: float = 0.0
+    _last_release: float = 0.0
+    _click_pending: bool = False
+    _long_fired: bool = False
+
+    def update_from_msg(self, msg: Any) -> str | None:
+        y = bool(getattr(msg, self.button_attr, False))
+        return self.update(y_pressed=y)
+
+    def update(self, *, y_pressed: bool, right_x: float = 0.0, right_y: float = 0.0) -> str | None:
+        del right_x, right_y  # stick not used for episode control
+        now = float(self._clock())
+
+        if y_pressed and not self._pressed:
+            self._pressed = True
+            self._pressed_at = now
+            self._long_fired = False
+            return None
+        if y_pressed and self._pressed:
+            if not self._long_fired and now - self._pressed_at >= float(self.long_press_s):
+                self._long_fired = True
+                self._click_pending = False
+                return "right_stick_down"
+            return None
+        if not y_pressed and self._pressed:
+            self._pressed = False
+            held_s = now - self._pressed_at
+            if self._long_fired or held_s >= float(self.long_press_s):
+                fired = not self._long_fired
+                self._long_fired = False
+                self._click_pending = False
+                return "right_stick_down" if fired else None
+            if self._click_pending and now - self._last_release <= float(self.double_press_s):
+                self._click_pending = False
+                return "right_stick_left"  # double = rerecord
+            self._click_pending = True
+            self._last_release = now
+            return None
+        if (
+            not y_pressed
+            and self._click_pending
+            and now - self._last_release >= float(self.double_press_s)
+        ):
+            self._click_pending = False
+            return "right_stick_right"  # single = start
+        return None
+
+
 class QuestEpisodeControlEventSource:
     """Subscribe to Quest joystick; emit episode events only (no action pubs)."""
 
@@ -445,10 +577,12 @@ class QuestEpisodeControlEventSource:
         self,
         *,
         topic: str = DEFAULT_JOYSTICK_TOPIC,
-        mode: str = "quest_y_stick",
+        mode: str = "quest_y_button",
         detector: StickEdgeDetector | None = None,
         chord: ButtonChordDetector | None = None,
         mod_stick: ModifierStickDetector | None = None,
+        a_button: AButtonGestureDetector | None = None,
+        y_button: YButtonGestureDetector | None = None,
         calibration: StickAxisCalibration | None = None,
         source: str | None = None,
     ):
@@ -470,6 +604,8 @@ class QuestEpisodeControlEventSource:
         )
         if calibration is not None:
             self.mod_stick.stick.calibration = calibration
+        self.a_button = a_button or AButtonGestureDetector()
+        self.y_button = y_button or YButtonGestureDetector()
         self._lock = threading.Lock()
         self._pending: EpisodeControlEvent | None = None
         self._latest_raw: tuple[float, float] | None = None
@@ -536,8 +672,12 @@ class QuestEpisodeControlEventSource:
             event_type = self.detector.update(right_x, right_y)
         elif self.mode == "quest_y_chord":
             event_type = self.chord.update_from_msg(joy)
+        elif self.mode == "quest_a_button":
+            event_type = self.a_button.update_from_msg(joy)
+        elif self.mode == "quest_y_button":
+            event_type = self.y_button.update_from_msg(joy)
         else:
-            # Default quest_y_stick: hold Y + tip right stick.
+            # quest_y_stick: hold Y + tip right stick.
             event_type = self.mod_stick.update_from_msg(joy)
 
         if event_type is None:

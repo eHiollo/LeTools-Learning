@@ -36,4 +36,6 @@ bash scripts/rl/run_rl100_zarr_collect.sh preflight --check-ros --timeout-s 10
 bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live --build-after
 
 # 输出: data/rl100/box_to_chest_v1/episodes/*.npz → demo.zarr
-# B 单击=success，双击=failure，长按/重录=abort
+# 按键（与 main HIL 对齐）:
+#   Y 单击=开始录制  Y 双击=rerecord  Y 长按=结束会话
+#   B 短按=success   B 长按=failure

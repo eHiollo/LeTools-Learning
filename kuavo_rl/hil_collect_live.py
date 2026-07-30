@@ -4,7 +4,7 @@ Mirrors ``lerobot-record`` UX:
   - one process stays up across many episodes
   - RESET (teleop ok, no write) → RECORD → save → RESET …
   - clear phase lines (not a JSON dump every step)
-  - Y+stick: → early end / start, ← rerecord, ↓ end session
+  - default episode control: Y click / double / long (right stick free)
 """
 
 from __future__ import annotations
@@ -33,9 +33,11 @@ from kuavo_rl.hil_recording.models import (
 )
 from kuavo_rl.hil_recording.timebase import now_stamps
 from kuavo_rl.quest_episode_control import (
+    AButtonGestureDetector,
     ModifierStickDetector,
     QuestEpisodeControlEventSource,
     StickEdgeDetector,
+    YButtonGestureDetector,
     load_stick_calibration,
 )
 from kuavo_rl.recording import HILReplayWriter, TransitionRecord
@@ -51,17 +53,31 @@ VR_SAFETY_MAX_STEPS = 100_000
 VR_SAFETY_MAX_DURATION_S = 86_400.0
 
 
-def _print_controls() -> None:
+def _print_controls(episode_control: str, *, long_press_s: float = 1.0) -> None:
+    lp = f"{long_press_s:g}s"
     _say("========== VR collect (LeRobot-style session) ==========")
     _say("Hold grip          → move arms (Quest IK)")
-    _say("Hold Y + stick →   → start recording (RESET only)")
-    _say("Hold Y + stick ←   → rerecord (discard current)")
-    _say("Hold Y + stick ↓   → end session (only in RESET; finish ep with B first)")
-    _say("B click            → SUCCESS + end → accepted_replay (train-ready)")
-    _say("B double-click     → FAILURE + end → accepted_replay (train-ready)")
-    _say("B hold ≥1.2s       → ABORT → quarantine (not train-ready)")
+    if episode_control == "quest_y_button":
+        _say("Y single click     → start recording (RESET only)")
+        _say("Y double-click     → rerecord (discard, not saved, back to RESET)")
+        _say(f"Y long press (≥{lp}) → end entire collection session (RESET only)")
+        _say("Right stick        → free for waist/chassis (not episode control)")
+        _say("B short press      → SUCCESS + end → accepted_replay (train-ready)")
+        _say(f"B long press (≥{lp}) → FAILURE + end → accepted_replay")
+    elif episode_control == "quest_a_button":
+        _say("A click            → start recording (RESET only)")
+        _say("A double-click     → rerecord (discard current)")
+        _say(f"A hold ≥{lp}       → end session (only in RESET; finish ep with B first)")
+        _say("Right stick        → waist/chassis only (not episode control)")
+        _say("B short press      → SUCCESS + end → accepted_replay (train-ready)")
+        _say(f"B long press (≥{lp}) → FAILURE + end → accepted_replay")
+    else:
+        _say("Hold Y + stick →   → start recording (RESET only)")
+        _say("Hold Y + stick ←   → rerecord (discard current)")
+        _say(f"Hold Y + stick ↓ (≥{lp}) → end session (only in RESET; finish ep with B first)")
+        _say("B short press      → SUCCESS + end → accepted_replay (train-ready)")
+        _say(f"B long press (≥{lp}) → FAILURE + end → accepted_replay")
     _say("No step timeout    → every kept episode must end with B")
-    _say("Solo mode          → no offline label/review; B is the label")
     _say("Ctrl-C             → abort current; twice → force quit")
     _say("=======================================================")
 
@@ -204,7 +220,8 @@ class VrCollectRuntime:
         _say("Connecting Kuavo-Sim + Quest teleop (one-time setup)…")
         _say("Episode end = B only (no step/time / consecutive-clip cutoff)")
         kuavo_gym = _make_kuavo_gym(deploy_config, max_episode_steps=self.max_steps)
-        teleop_raw = raw.get("teleop", {}) if isinstance(raw, dict) else {}
+        teleop_raw = dict(raw.get("teleop", {}) or {}) if isinstance(raw, dict) else {}
+        teleop_raw["reward_long_press_s"] = float(self.cfg.chord_long_press_s)
         allowed = {
             k: teleop_raw[k]
             for k in RosTeleopConfig.__dataclass_fields__
@@ -230,9 +247,20 @@ class VrCollectRuntime:
                     calibration=cal,
                 )
             )
+            long_press_s = float(self.cfg.chord_long_press_s)
+            a_btn = AButtonGestureDetector(
+                double_press_s=0.70,
+                long_press_s=long_press_s,
+            )
+            y_btn = YButtonGestureDetector(
+                double_press_s=0.40,
+                long_press_s=long_press_s,
+            )
             self.event_src = QuestEpisodeControlEventSource(
                 mode=self.cfg.episode_control,
                 mod_stick=mod,
+                a_button=a_btn,
+                y_button=y_btn,
                 calibration=cal,
             )
             try:
@@ -432,7 +460,7 @@ class VrCollectRuntime:
                     eid, "failure_candidate", stop_reason="failure_button", actor=operator
                 )
                 stop_reason, result_type = "failure_button", "failure"
-                _say("B×2 → failure — ending episode")
+                _say("B hold → failure — ending episode")
                 raise RuntimeError("teleop_stop:failure_button")
             if te.get("abort") or te.get("stop"):
                 stop_reason = "abort" if te.get("abort") else "estop"
@@ -446,9 +474,12 @@ class VrCollectRuntime:
                 raise RuntimeError("episode_control:rerecord")
             if ev == "right_stick_right":
                 # No unlabeled early-end: every kept episode must end with B.
-                _say("Y+→ ignored while recording — end with B (success/fail/abort)")
+                _say("Y click ignored while recording — end with B (short=success, long=failure)")
             if ev == "right_stick_down":
-                _say("Y+↓ ignored while recording — end episode with B first, then ↓ in RESET")
+                _say(
+                    "Y long press ignored while recording — "
+                    "end episode with B first, then Y long press in RESET"
+                )
             stop_req = orch.session.poll_stop_request()
             if stop_req is not None:
                 stop_reason, result_type = stop_req.reason, "fault"
@@ -601,7 +632,10 @@ def collect_vr_session(
 ) -> dict[str, Any]:
     """LeRobot-style multi-episode VR collect. Process stays up until ↓ / Ctrl-C / N eps."""
     _quiet_robot_logs()
-    _print_controls()
+    _print_controls(
+        cfg.episode_control,
+        long_press_s=float(getattr(cfg, "chord_long_press_s", 1.0) or 1.0),
+    )
 
     pf = orch.preflight(for_live_collect=False)
     if pf["status"] == "Block":

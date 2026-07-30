@@ -12,7 +12,7 @@ output_root: data/rl100
 zarr_name: demo.zarr
 overwrite: false
 
-# Keep failures by default (HIL B double-click). Use CLI --only-success to drop them.
+# Keep failures by default (HIL B long press). Use CLI --only-success to drop them.
 only_success: false
 
 fps: 10
