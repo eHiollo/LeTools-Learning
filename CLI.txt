@@ -11,16 +11,17 @@ rsync -avz --progress \
 # RL-100 zarr 真机采集（upper cams）— 2026-07-30 已验证
 # 头 Orbbec @30Hz；腕 D405 depth-only 640x480@15Hz
 # 不要重复启动 hil_upper_cams.launch
+#
+# 机器特定配置（ROS_MASTER_URI / ROS_IP / 腕部相机序列号）放
+# configs/rl/local/env.sh（gitignored），模板见 env.sh.example：
+#   cp configs/rl/local/env.sh.example configs/rl/local/env.sh && 填值
 # ============================================================
 
 # --- 终端 A：相机（只开一次，保持运行）---
-export ROS_MASTER_URI=http://kuavo_master:11311
-export ROS_IP=192.168.26.12
 source /opt/ros/noetic/setup.bash
 source ~/kuavo_ros_application/devel/setup.bash
 cd ~/wjy/robot-il/LeTools-Learning
-export LEFT_WRIST_CAMERA_SERIAL_NO=412622270881
-export RIGHT_WRIST_CAMERA_SERIAL_NO=260522279592
+source configs/rl/local/env.sh   # ROS_MASTER_URI / ROS_IP / 腕部序列号
 roslaunch configs/launch/hil_upper_cams.launch
 
 # 确认深度（头~30Hz，腕~15Hz）
@@ -31,6 +32,7 @@ roslaunch configs/launch/hil_upper_cams.launch
 # --- 终端 B：采集 ---
 conda activate letools-rl
 cd ~/wjy/robot-il/LeTools-Learning
+# env.sh 会被脚本自动 source
 bash scripts/rl/run_rl100_zarr_collect.sh preflight --check-ros --timeout-s 10
 # 目标: ros_pointcloud.ok == true
 bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live --build-after

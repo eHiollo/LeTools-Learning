@@ -233,6 +233,7 @@ kuavo_server/README.md
 # Machine-local HIL collection overrides (stick calibration, secrets)
 configs/rl/local/*
 !configs/rl/local/.gitkeep
+!configs/rl/local/env.sh.example
 
 # Local KuavoBrain vendor checkout (nested git, multi-GB). Keep out of this repo.
 third_party/kuavo_brain/

@@ -53,25 +53,26 @@ data/rl100/<task>/demo.zarr          # RL-100 training dataset
 
 **不要重复 `roslaunch hil_upper_cams.launch`**，否则节点名冲突互相踢掉。
 
-本机腕部序列号（也写在 `~/.bashrc`）：
+腕部相机序列号等机器特定配置统一放在 `configs/rl/local/env.sh`（gitignored），
+模板见 `configs/rl/local/env.sh.example`。首次使用：
 
 ```bash
-export LEFT_WRIST_CAMERA_SERIAL_NO=412622270881
-export RIGHT_WRIST_CAMERA_SERIAL_NO=260522279592
+cp configs/rl/local/env.sh.example configs/rl/local/env.sh
+# 编辑 env.sh：填 ROS_MASTER_URI / ROS_IP / 两个腕部相机序列号
+# 查序列号：rs-enumerate-devices --compact | grep Serial
 ```
+
+`run_rl100_zarr_collect.sh` 会自动 source 它；终端 A 的 roslaunch 需手动 `source`。
 
 ## 终端顺序（真机 upper cams）
 
 ### 终端 A — 相机（保持运行，只开一次）
 
 ```bash
-export ROS_MASTER_URI=http://kuavo_master:11311
-export ROS_IP=192.168.26.12
 source /opt/ros/noetic/setup.bash
 source ~/kuavo_ros_application/devel/setup.bash
 cd ~/wjy/robot-il/LeTools-Learning
-export LEFT_WRIST_CAMERA_SERIAL_NO=412622270881
-export RIGHT_WRIST_CAMERA_SERIAL_NO=260522279592
+source configs/rl/local/env.sh   # ROS_MASTER_URI / ROS_IP / 腕部相机序列号
 roslaunch configs/launch/hil_upper_cams.launch
 ```
 
@@ -89,6 +90,7 @@ rostopic hz /right_wrist_camera/depth/image_rect_raw/compressedDepth
 ```bash
 conda activate letools-rl
 cd ~/wjy/robot-il/LeTools-Learning
+# env.sh 会被脚本自动 source（设 ROS_MASTER_URI / ROS_IP）
 
 bash scripts/rl/run_rl100_zarr_collect.sh preflight --check-ros --timeout-s 10
 # 目标: ros_pointcloud.ok == true（三路 depth+info+tf）
@@ -115,59 +117,52 @@ python scripts/rl/collect_rl100_zarr.py inspect --task box_to_chest_v1
 - gripper 若 3s 无消息会 idle-seed 零帧，避免永远卡在 buffer
 - `kuavo_rl/ros_msg_compat.py`：只注入 SDK 缺的 footPose6D，**不要**把整包 SDK `kuavo_msgs` 前置到 `PYTHONPATH`（会弄坏 `/sensors_data_raw` MD5）
 - 若腕相机进程退出（`Bond broken` / `finished cleanly`），先停干净再只开一次终端 A，再 collect
-- ROS master：`ROS_MASTER_URI=http://kuavo_master:11311`，本机 `ROS_IP=192.168.26.12`
+- ROS master：见 `configs/rl/local/env.sh`（`ROS_MASTER_URI` / `ROS_IP`），脚本与终端 A 均自动/手动 source
 
 ## libgomp static-TLS workaround（aarch64 / Tegra）
 
 真机 `import torch` 可能直接挂掉：
 
 ```
-ImportError: .../torch/lib/../../torch.libs/libgomp-a49a47f9.so.1.0.0:
+ImportError: .../torch/lib/../../torch.libs/libgomp-<hash>.so.1.0.0:
 cannot allocate memory in static TLS block
 ```
 
-**根因**：torch 自带的 `libgomp-a49a47f9.so.1.0.0` 用 static TLS（线程局部存储
-静态块），且其 SONAME 是 `libgomp-a49a47f9.so.1.0.0`，**和系统的
-`libgomp.so.1` 不同**。glibc 在进程启动晚期才加载它时，static TLS block 已被
-先加载的库（ROS noetic + kuavo workspace 引入的大量 .so）分配完，没有剩余槽位
-—— 与内存大小无关，是 TLS 预留空间问题。
+**根因**：torch 自带的 `libgomp-<hash>.so` 用 static TLS（线程局部存储静态块），
+且其 SONAME（如 `libgomp-a49a47f9.so.1.0.0`）**和系统的 `libgomp.so.1` 不同**。
+glibc 在进程启动晚期才加载它时，static TLS block 已被先加载的库（ROS noetic +
+kuavo workspace 引入的大量 .so）分配完，没有剩余槽位 —— 与内存大小无关，是 TLS
+预留空间问题。
 
 `live_collect.py:46` 的 `import torch  # load before cv_bridge` 只能保证 torch
 先于 `cv_bridge` 加载，**当 torch 自身就加载失败时它救不了**，必须在 Python
 启动前就 preload。
 
 **关键坑**：preload **系统的** `libgomp.so.1` **没用** —— SONAME 不同，torch
-仍会加载自己的 `libgomp-a49a47f9.so`，两者各占一个 TLS 槽位，问题依旧。必须
-preload **torch 自己的** `libgomp-a49a47f9.so.1.0.0`，让它先占 TLS 槽位，torch
-后续加载时复用。
+仍会加载自己的 `libgomp-<hash>.so`，两者各占一个 TLS 槽位，问题依旧。必须
+preload **torch 自己的** `libgomp-<hash>.so`，让它先占 TLS 槽位，torch 后续
+加载时复用。
 
-**修复**：`scripts/rl/run_rl100_zarr_collect.sh` 已内置自动检测，按优先级查找
-torch 自带的 libgomp 并注入 `LD_PRELOAD`。若 shell 里已有 `LD_PRELOAD` 但
-不指向 torch 的 libgomp（典型：之前手动 `export` 过系统的 libgomp），脚本会
-**覆盖**它并打印 `overriding stale LD_PRELOAD=[...]`；想保留自己的设置可设
-`RL100_KEEP_LD_PRELOAD=1`。
+**修复**：`scripts/rl/run_rl100_zarr_collect.sh` 在 Python 启动前 `LD_PRELOAD`
+torch 自带的 libgomp。检测完全动态 —— glob 匹配
+`$CONDA_PREFIX/lib/python*/site-packages/torch.libs/libgomp*.so*`，**不写死
+Python 版本与 libgomp hash**，升级 torch / python 无需改脚本；找不到时兜底系统
+libgomp。若 shell 里已有 `LD_PRELOAD` 但不指向 torch 的 libgomp（典型：之前手动
+`export` 过系统的 libgomp），脚本会**覆盖**它并打印
+`overriding stale LD_PRELOAD=[...]`；想保留自己的设置可设 `RL100_KEEP_LD_PRELOAD=1`。
 
 ```bash
 # 脚本会自动做，这里仅供手动复现（注意：必须是 torch 自己的那个）
-GOMP=$CONDA_PREFIX/lib/python3.10/site-packages/torch.libs/libgomp-a49a47f9.so.1.0.0
+GOMP=$(ls "$CONDA_PREFIX"/lib/python*/site-packages/torch.libs/libgomp*.so* 2>/dev/null | head -1)
 LD_PRELOAD="$GOMP" python -c "import torch, cv_bridge; print(torch.__version__)"
-# 应输出 2.9.1+cpu 且 cv_bridge OK
+# 应输出 torch 版本且 cv_bridge OK
 ```
 
 注意：
 
-- 升级 torch 后 `libgomp-a49a47f9.so.1.0.0` 的 hash 段（`a49a47f9`）可能变化，
-  脚本里也兜底匹配 `torch.libs/libgomp.so.1` 与系统 libgomp，但**首选**带 hash
-  的那个；若哪天 torch 不再自带 libgomp，兜底链仍能工作。
-- 若在别的 shell 直接跑 `python scripts/rl/collect_rl100_zarr.py`（绕过启动
-  脚本），需自己先 `export LD_PRELOAD` 指向 torch 自带的 libgomp，否则会复现
-  该报错。
+- 若在别的 shell 直接跑 `python scripts/rl/collect_rl100_zarr.py`（绕过启动脚本），
+  需自己先 `export LD_PRELOAD` 指向 torch 自带的 libgomp，否则会复现该报错。
 - 升级 torch / glibc 后若问题消失，这段检测是幂等的，可保留无副作用。
-- 候选路径（按优先级）：
-  - `$CONDA_PREFIX/lib/python3.10/site-packages/torch.libs/libgomp-a49a47f9.so.1.0.0`（推荐，精确匹配 torch SONAME）
-  - `$CONDA_PREFIX/lib/python3.10/site-packages/torch.libs/libgomp.so.1`
-  - `/usr/lib/aarch64-linux-gnu/libgomp.so.1`（系统兜底）
-  - `/usr/lib/x86_64-linux-gnu/libgomp.so.1`（x86_64 兜底）
 
 ## Dependencies
 

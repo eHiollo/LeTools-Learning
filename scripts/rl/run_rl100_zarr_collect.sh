@@ -8,6 +8,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# Machine-local overrides (ROS_MASTER_URI, ROS_IP, wrist camera serials, ...).
+# Copy configs/rl/local/env.sh.example → configs/rl/local/env.sh and edit.
+# env.sh is gitignored; only the .example is committed. Sourced before conda so
+# its values feed the ${VAR:-default} fallbacks below.
+if [[ -f "${ROOT}/configs/rl/local/env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${ROOT}/configs/rl/local/env.sh"
+fi
+
 # shellcheck disable=SC1091
 source "${HOME}/miniforge3/etc/profile.d/conda.sh"
 conda activate letools-rl
@@ -30,13 +39,13 @@ export ROS_IP="${ROS_IP:-192.168.26.12}"
 CFG="${RL100_CFG:-configs/rl/rl100_zarr_collect_upper_cams.yaml}"
 echo "[rl100] config=${CFG} ROS_MASTER_URI=${ROS_MASTER_URI} ROS_IP=${ROS_IP}"
 
-# Preload libgomp so torch's bundled libgomp-a49a47f9.so.1.0.0 can reuse an
-# already-reserved static TLS slot instead of failing with
+# Preload libgomp so torch's bundled libgomp can reuse an already-reserved
+# static TLS slot instead of failing with
 #   "cannot allocate memory in static TLS block"
 # Must happen before python starts.
 #
-# IMPORTANT: torch's bundled libgomp has a custom SONAME
-# (libgomp-a49a47f9.so.1.0.0) that differs from the system libgomp.so.1, so
+# IMPORTANT: torch's bundled libgomp has a custom SONAME (e.g.
+# libgomp-a49a47f9.so.1.0.0) that differs from the system libgomp.so.1, so
 # preloading the system libgomp does NOT prevent torch from loading its own —
 # they occupy separate TLS slots. After sourcing ROS noetic + kuavo workspace,
 # other ROS libs fill the static TLS block and torch's own libgomp then fails
@@ -49,19 +58,25 @@ echo "[rl100] config=${CFG} ROS_MASTER_URI=${ROS_MASTER_URI} ROS_IP=${ROS_IP}"
 # because it makes `import torch` work in isolation (no ROS sourced → TLS free)
 # but fails inside this script (ROS libs fill TLS). Set RL100_KEEP_LD_PRELOAD=1
 # to opt out and keep your own LD_PRELOAD verbatim.
-_torch_libs="${CONDA_PREFIX:-}/lib/python3.10/site-packages/torch.libs"
+#
+# Detection is fully dynamic: glob the conda env for any
+# `python*/site-packages/torch.libs/libgomp*.so*` so neither the Python version
+# nor the torch libgomp hash is hard-coded — survives torch/python upgrades.
 _rl100_gomp=""
-for _gomp in \
-  "${_torch_libs}/libgomp-a49a47f9.so.1.0.0" \
-  "${_torch_libs}/libgomp.so.1" \
-  "/usr/lib/aarch64-linux-gnu/libgomp.so.1" \
-  "/usr/lib/x86_64-linux-gnu/libgomp.so.1"; do
-  if [[ -f "$_gomp" ]]; then
-    _rl100_gomp="$_gomp"
-    break
-  fi
+for _d in "${CONDA_PREFIX:-}"/lib/python*/site-packages/torch.libs; do
+  [[ -d "$_d" ]] || continue
+  for _f in "$_d"/libgomp*.so*; do
+    [[ -f "$_f" ]] && { _rl100_gomp="$_f"; break 2; }
+  done
 done
-unset _torch_libs _gomp
+unset _d _f
+# Fallback: system libgomp (only if torch didn't ship its own).
+if [[ -z "$_rl100_gomp" ]]; then
+  for _gomp in /usr/lib/aarch64-linux-gnu/libgomp.so.1 /usr/lib/x86_64-linux-gnu/libgomp.so.1; do
+    [[ -f "$_gomp" ]] && { _rl100_gomp="$_gomp"; break; }
+  done
+  unset _gomp
+fi
 
 if [[ -n "${RL100_KEEP_LD_PRELOAD:-}" ]]; then
   echo "[rl100] RL100_KEEP_LD_PRELOAD=1 → keeping LD_PRELOAD=[${LD_PRELOAD:-}]"
