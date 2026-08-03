@@ -85,6 +85,16 @@ rostopic hz /left_wrist_camera/depth/image_rect_raw/compressedDepth
 rostopic hz /right_wrist_camera/depth/image_rect_raw/compressedDepth
 ```
 
+
+查看头相机画面
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/kuavo_ros_application/devel/setup.bash
+source ~/.bashrc
+rosrun web_video_server web_video_server _port:=8080
+```
+http://10.10.31.37:8080/stream_viewer?topic=/camera/color/image_raw
+
 ### 终端 B — 采集
 
 ```bash

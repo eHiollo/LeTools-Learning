@@ -1,6 +1,6 @@
 <!-- HIL upper-machine cameras.
      Head: Orbbec @ 30 Hz (color+depth).
-     Wrists: RealSense D405 depth-only @ 15 Hz, 640x480 (both FW support this).
+     Wrists: RealSense D405 depth-only @ 30 Hz, 848x480.
        - Color disabled (RL-100 zarr only needs depth for point clouds).
        - initial_reset + respawn to handle D405 nodelet bond-break issue.
      Serials: LEFT_WRIST_CAMERA_SERIAL_NO / RIGHT_WRIST_CAMERA_SERIAL_NO -->
@@ -9,8 +9,8 @@
   <arg name="color_fps" default="30"/>
   <arg name="depth_fps" default="30"/>
   <!-- Wrists -->
-  <arg name="wrist_fps" default="15"/>
-  <arg name="wrist_width" default="640"/>
+  <arg name="wrist_fps" default="30"/>
+  <arg name="wrist_width" default="848"/>
   <arg name="wrist_height" default="480"/>
   <arg name="enable_wrist_camera" default="true"/>
   <arg name="with_wrist_camera" default="$(arg enable_wrist_camera)"/>
