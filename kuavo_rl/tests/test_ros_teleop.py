@@ -5,7 +5,7 @@ import numpy as np
 from kuavo_rl.ros_teleop import RosTeleopAdapter, RosTeleopConfig
 
 
-def _joy(*, left=0.0, right=0.0, success=False):
+def _joy(*, left=0.0, right=0.0, success=False, right_x=0.0, right_y=0.0):
     return SimpleNamespace(
         left_grip=left,
         right_grip=right,
@@ -15,6 +15,8 @@ def _joy(*, left=0.0, right=0.0, success=False):
         left_second_button_pressed=False,
         right_first_button_pressed=False,
         right_second_button_pressed=success,
+        right_x=right_x,
+        right_y=right_y,
     )
 
 
@@ -194,3 +196,64 @@ def test_ros_teleop_b_success_is_one_shot_do_not_double_poll():
     event2 = adapter.poll()
     assert event2.success is False
     assert event2.failure is False
+
+
+def test_ros_teleop_right_stick_ud_labels():
+    """右摇杆下推=success，上推=failure；需要回中 rearm + debounce。"""
+    clock = [0.0]
+    adapter = RosTeleopAdapter(
+        RosTeleopConfig(
+            reward_gesture="right_stick_ud",
+            reward_stick_threshold=0.80,
+            reward_stick_rearm_threshold=0.20,
+            reward_stick_debounce_s=0.25,
+        )
+    )
+    adapter._reward_clock = lambda: clock[0]
+
+    def poll(right_y: float):
+        adapter._joy_callback(_joy(right_y=right_y))
+        return adapter.poll()
+
+    # 下推 → success
+    clock[0] = 1.0
+    event = poll(-0.95)
+    assert event.success is True
+    assert event.failure is False
+
+    # 不回中再次下推 → 不触发（未 rearm）
+    clock[0] = 1.1
+    event = poll(-0.95)
+    assert event.success is False
+
+    # 回中 rearm
+    clock[0] = 1.2
+    event = poll(0.0)
+    assert event.success is False
+
+    # 上推 → failure
+    clock[0] = 1.3
+    event = poll(0.95)
+    assert event.failure is True
+    assert event.success is False
+
+    # 回中后立即下推，在 debounce 内 → 不触发
+    clock[0] = 1.4
+    poll(0.0)
+    clock[0] = 1.45
+    event = poll(-0.95)
+    assert event.success is False
+
+    # debounce 过后下推 → success
+    clock[0] = 1.8
+    event = poll(-0.95)
+    assert event.success is True
+
+    # RESET 阶段禁用标签手势
+    adapter.set_label_gestures_enabled(False)
+    clock[0] = 2.0
+    poll(0.0)
+    clock[0] = 2.1
+    event = poll(-0.95)
+    assert event.success is False
+    assert event.failure is False

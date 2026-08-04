@@ -34,6 +34,11 @@ class RosTeleopConfig:
     reward_button: str | None = None
     reward_double_press_s: float = 0.70  # unused; kept for config compat
     reward_long_press_s: float = 1.20
+    # "button" = B short/long; "right_stick_ud" = stick down=success, up=failure.
+    reward_gesture: str = "button"
+    reward_stick_threshold: float = 0.80
+    reward_stick_rearm_threshold: float = 0.20
+    reward_stick_debounce_s: float = 0.25
 
 
 class RosTeleopAdapter(TeleopAdapter):
@@ -62,6 +67,9 @@ class RosTeleopAdapter(TeleopAdapter):
         self._reward_pressed = False
         self._reward_pressed_at = 0.0
         self._reward_long_fired = False
+        self._label_gestures_enabled = True
+        self._reward_stick_armed = True
+        self._reward_stick_last_fire: float | None = None
 
     def start(self) -> None:
         if self._ros is not None:
@@ -112,6 +120,14 @@ class RosTeleopAdapter(TeleopAdapter):
         self._reward_pressed = False
         self._reward_pressed_at = 0.0
         self._reward_long_fired = False
+        self._reward_stick_armed = True
+        self._reward_stick_last_fire = None
+
+    def set_label_gestures_enabled(self, enabled: bool) -> None:
+        """Disable success/failure gestures during RESET without dropping teleop."""
+        self._label_gestures_enabled = bool(enabled)
+        if not enabled:
+            self._reset_reward_gesture()
 
     def set_reference_action(self, action: np.ndarray) -> None:
         a = np.asarray(action, dtype=np.float32).reshape(-1)
@@ -215,6 +231,45 @@ class RosTeleopAdapter(TeleopAdapter):
             self._reward_long_fired = False
         return success, failure, False
 
+    def _reward_stick_event(self, msg: Any | None) -> tuple[bool, bool, bool]:
+        """Right stick tip: down=success, up=failure (edge + rearm to neutral)."""
+        if msg is None:
+            return False, False, False
+        ay = float(getattr(msg, "right_y", 0.0))
+        ax = float(getattr(msg, "right_x", 0.0))
+        mag = max(abs(ax), abs(ay))
+        rearm = float(self.config.reward_stick_rearm_threshold)
+        trig = float(self.config.reward_stick_threshold)
+        if mag <= rearm:
+            self._reward_stick_armed = True
+            return False, False, False
+        if not self._reward_stick_armed or mag < trig:
+            return False, False, False
+        if abs(ay) < abs(ax):
+            return False, False, False
+        now = float(self._reward_clock())
+        if (
+            self._reward_stick_last_fire is not None
+            and (now - self._reward_stick_last_fire)
+            < float(self.config.reward_stick_debounce_s)
+        ):
+            return False, False, False
+        self._reward_stick_armed = False
+        self._reward_stick_last_fire = now
+        if ay < 0.0:
+            return True, False, False
+        return False, True, False
+
+    def _reward_gesture_event(self, msg: Any | None) -> tuple[bool, bool, bool]:
+        if not self._label_gestures_enabled:
+            return False, False, False
+        mode = str(self.config.reward_gesture or "button").strip().lower()
+        if mode in {"right_stick_ud", "right_stick", "stick_ud"}:
+            return self._reward_stick_event(msg)
+        return self._reward_button_event(
+            self._button(msg, self.config.reward_button) if msg is not None else False
+        )
+
     def _active_sides(self, msg: Any) -> tuple[bool, bool]:
         left = float(getattr(msg, "left_grip", 0.0)) > self.config.grip_threshold
         right = float(getattr(msg, "right_grip", 0.0)) > self.config.grip_threshold
@@ -264,9 +319,7 @@ class RosTeleopAdapter(TeleopAdapter):
             if hand_fresh:
                 intervention_mask[7] = True
                 intervention_mask[15] = True
-        gesture_success, gesture_failure, gesture_abort = self._reward_button_event(
-            self._button(msg, self.config.reward_button) if msg is not None else False
-        )
+        gesture_success, gesture_failure, gesture_abort = self._reward_gesture_event(msg)
         abort = bool(
             gesture_abort
             or (

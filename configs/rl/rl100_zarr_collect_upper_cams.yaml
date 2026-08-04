@@ -74,3 +74,8 @@ live_max_duration_s: 86400
 # Align with main HIL collect (quest_y_button + B short/long).
 episode_control: quest_y_button
 chord_long_press_s: 0.8
+# 右摇杆上下打标签（下=success，上=failure）。改回 B 键则设为 button。
+reward_gesture: right_stick_ud
+reward_stick_threshold: 0.80
+reward_stick_rearm_threshold: 0.20
+reward_stick_debounce_s: 0.25

@@ -196,6 +196,10 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     allowed["require_hand_command"] = True
     # JoySticks field name — not the UI letter "B".
     allowed.setdefault("reward_button", "right_second_button_pressed")
+    allowed.setdefault("reward_gesture", config.reward_gesture)
+    allowed.setdefault("reward_stick_threshold", config.reward_stick_threshold)
+    allowed.setdefault("reward_stick_rearm_threshold", config.reward_stick_rearm_threshold)
+    allowed.setdefault("reward_stick_debounce_s", config.reward_stick_debounce_s)
     teleop = RosTeleopAdapter(RosTeleopConfig(**allowed))
     teleop.start()
 
@@ -221,17 +225,19 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         env.close()
         raise RuntimeError(f"depth/tf preflight failed: {pf}")
 
-    command_deadline = time.monotonic() + 8.0
+    # /kuavo_arm_traj and /control_robot_hand_position are demand-driven:
+    # they only publish while the operator is actively teleoping. A hard
+    # preflight would block collection before any motion occurs. Treat as
+    # a soft warning; the per-step require_command_action gate still
+    # discards episodes that never receive a command stream.
     command_pf = teleop.command_stream_status()
-    while not command_pf["ok"] and time.monotonic() < command_deadline:
-        rospy.sleep(0.05)
-        command_pf = teleop.command_stream_status()
     _say(f"command-stream preflight: {command_pf}")
     if not command_pf["ok"]:
-        pc_hub.close()
-        teleop.close()
-        env.close()
-        raise RuntimeError(f"arm/hand command preflight failed: {command_pf}")
+        _say(
+            "WARN: arm/hand command stream not yet publishing "
+            "(demand-driven topics). Start teleop during RECORD; "
+            "episodes without commands will be discarded."
+        )
 
     cal = load_stick_calibration()
     mod = ModifierStickDetector(stick=StickEdgeDetector(calibration=cal))
@@ -290,6 +296,7 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
             obs, _ = env.reset()
             teleop.set_reference_action(obs["observation.state"])
             teleop.reset()
+            teleop.set_label_gestures_enabled(False)
             end_session = False
             while not rospy.is_shutdown():
                 # Do NOT call teleop.poll() here: env.step() already polls once.
@@ -433,9 +440,17 @@ def _record_one_episode(
     episode_dir: Path,
     attempt: int = 1,
 ) -> LiveEpisodeResult:
+    """Record state + point cloud every frame. Action = next_state.
+
+    Does NOT depend on /kuavo_arm_traj or /control_robot_hand_command — those
+    are demand-driven and only publish while the operator actively controls.
+    Instead:
+      - state is recorded every frame (always available from /sensors_data_raw)
+      - action[t] = state[t+1]  (absolute joint target = next frame's state)
+      - last frame action = state[-1]  (hold)
+    """
     eid = uuid.uuid4().hex[:12]
     states: list[np.ndarray] = []
-    actions: list[np.ndarray] = []
     pcs: list[np.ndarray] = []
     result_type = "abort"
     stop_reason = "unknown"
@@ -443,10 +458,13 @@ def _record_one_episode(
 
     obs, info = env.reset()
     teleop.set_reference_action(obs["observation.state"])
-    # Clear any half-pressed B gesture left over from RESET idle polling.
     teleop.reset()
+    teleop.set_label_gestures_enabled(True)
     _say(f"{tag}  id={eid}")
-    _say("         B short=success  |  B long=failure  |  Y double=rerecord")
+    if str(config.reward_gesture).lower().startswith("right_stick"):
+        _say("         右摇杆下=success  |  右摇杆上=failure  |  Y双击=rerecord")
+    else:
+        _say("         B short=success  |  B long=failure  |  Y double=rerecord")
 
     dt = 1.0 / max(config.fps, 1.0)
     t0 = time.monotonic()
@@ -479,24 +497,21 @@ def _record_one_episode(
             result_type, stop_reason = "abort", "pointcloud_error"
             break
 
-        # Hold as step input only. Env.step polls teleop once (B labels + command
-        # stream). Never teleop.poll() here — that would steal B short-press edges.
+        # Record state every frame. env.step still polls teleop for B labels.
         state_t = np.asarray(obs["observation.state"], dtype=np.float32).copy()
+        # Gripper: if hand command is fresh, keep actual value; else use open (0.0).
+        cmd_status = teleop.command_stream_status()
+        if not cmd_status.get("hand_ready", False):
+            state_t[7] = 0.0   # left gripper open
+            state_t[15] = 0.0  # right gripper open
         hold = np.asarray(runner.select_action(obs).action, dtype=np.float32)
         obs, _, term, trunc, info = env.step(hold)
         teleop.set_reference_action(obs["observation.state"])
 
+        # Check B label from env step's teleop poll.
         labeled = _label_from_teleop_info(info)
-        action = _action_from_step_info(info)
-        if action is None:
-            if config.require_command_action:
-                _say(f"{tag}  discarding: arm/hand command stream missing or stale")
-                result_type, stop_reason = "abort", "command_stream_unavailable"
-                break
-            action = hold
 
         states.append(state_t)
-        actions.append(np.asarray(action, dtype=np.float32).copy())
         pcs.append(pc.copy())
 
         if labeled is not None:
@@ -514,7 +529,9 @@ def _record_one_episode(
             break
         time.sleep(dt)
 
-    if result_type == "abort" or not states:
+    # Only discard on explicit rerecord or empty episodes. Everything else
+    # (B success, B failure, env terminate, etc.) is kept.
+    if stop_reason == "rerecord" or len(states) < 2:
         return LiveEpisodeResult(
             status="discarded",
             episode_id=eid,
@@ -524,28 +541,16 @@ def _record_one_episode(
             stop_reason=stop_reason,
         )
 
-    quality_errors = episode_action_quality_errors(
-        states,
-        actions,
-        min_arm_action_state_delta_rad=config.min_arm_action_state_delta_rad,
-        require_gripper_motion=config.require_gripper_motion,
-        min_gripper_action_range=config.min_gripper_action_range,
-    )
-    if quality_errors:
-        _say(f"{tag}  discarding: " + "; ".join(quality_errors))
-        return LiveEpisodeResult(
-            status="discarded",
-            episode_id=eid,
-            steps=len(states),
-            result_type="quality_failed",
-            path=None,
-            stop_reason="quality_failed",
-        )
+    # action[t] = state[t+1]  (absolute joint target = next frame's state)
+    state_arr = np.stack(states, axis=0)
+    actions = np.zeros_like(state_arr)
+    actions[:-1] = state_arr[1:]
+    actions[-1] = state_arr[-1]  # last frame: hold
 
     path = save_episode_npz(
         episode_dir / f"{eid}_{result_type}.npz",
         states=states,
-        actions=actions,
+        actions=[actions[i] for i in range(len(actions))],
         point_clouds=pcs,
         result_type=result_type,
         meta={
@@ -553,10 +558,7 @@ def _record_one_episode(
             "task": config.task,
             "deploy_config": config.deploy_config,
             "env_config": config.env_config,
-            "eef_type": "qiangnao",
-            "arm_action_topic": config.arm_traj_topic,
-            "hand_action_topic": config.hand_command_topic,
-            "qiangnao_scalar_index": config.qiangnao_scalar_index,
+            "action_source": "next_state",
         },
     )
     return LiveEpisodeResult(

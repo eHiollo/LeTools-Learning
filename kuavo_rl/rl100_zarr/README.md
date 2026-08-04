@@ -34,14 +34,15 @@ data/rl100/grasp_8_4_v2/grasp_8_4_v2.zarr
 | `reward` / `return` / `done` / `timeout` | `(T, 1)` | sparse success + penalties |
 | `meta/episode_ends` | `(E,)` | episode boundaries |
 
-## Labels（与 main HIL 对齐）
+## Labels（upper cams 采集）
 
-- **B 短按** → **success**
-- **B 长按**（≥ `chord_long_press_s`，默认 0.8s）→ **failure**（会暂存，但当前 BC build 不保留）
+- **右摇杆下推** → **success**（`reward_gesture: right_stick_ud`）
+- **右摇杆上推** → **failure**
 - **Y 单击** → 开始录制（仅 RESET）
 - **Y 双击** → rerecord（丢弃当前，回 RESET）
-- **Y 长按** → 结束整场采集（仅 RESET；录制中请先用 B 结束）
-- 右摇杆留给腰/底盘，不占用 episode 控制（`episode_control: quest_y_button`）
+- **Y 长按** → 结束整场采集（仅 RESET；录制中请先打标签结束）
+- 右摇杆左右仍留给腰/底盘；上下仅在 RECORD 时打标签
+- 若以后用 B：yaml 设 `reward_gesture: button`（短按 success / 长按 failure）
 
 ## 相机稳定配置（已验证）
 

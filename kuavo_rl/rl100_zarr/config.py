@@ -105,6 +105,12 @@ class RL100CollectConfig:
     # Align with main HIL: quest_y_button + B short/long labels.
     episode_control: str = "quest_y_button"
     chord_long_press_s: float = 0.8
+    # "button" (B short=success / long=failure) or "right_stick_ud"
+    # (stick down=success / up=failure) for success/failure labeling.
+    reward_gesture: str = "button"
+    reward_stick_threshold: float = 0.80
+    reward_stick_rearm_threshold: float = 0.20
+    reward_stick_debounce_s: float = 0.25
 
     def output_dir(self) -> Path:
         return Path(self.output_root) / self.task
