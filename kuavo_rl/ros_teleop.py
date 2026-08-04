@@ -16,8 +16,17 @@ from kuavo_rl.teleop import TeleopAdapter, TeleopEvent
 class RosTeleopConfig:
     joystick_topic: str = "/quest_joystick_data"
     arm_traj_topic: str = "/kuavo_arm_traj"
+    hand_command_topic: str | None = None
     teleop_timeout_s: float = 0.20
+    hand_command_timeout_s: float = 0.20
     grip_threshold: float = 0.80
+    # RL-100 demonstrations must record the command stream even when Quest grip
+    # is being used to control the hand rather than as an arm deadman.
+    record_all_arm_commands: bool = False
+    require_hand_command: bool = False
+    # Qiangnao/Revo hand order is [thumb, thumb_aux, index, middle, ring, pinky].
+    # The existing 1-DoF Kuavo policy contract uses thumb as the grasp scalar.
+    qiangnao_scalar_index: int = 0
     success_button: str | None = None
     failure_button: str | None = None
     abort_button: str | None = None
@@ -32,8 +41,9 @@ class RosTeleopAdapter(TeleopAdapter):
 
     Kuavo's ``/kuavo_arm_traj`` contains 14 arm positions in degrees. The
     canonical action is ``[L7, left_claw, R7, right_claw]`` in radians and
-    normalized claw units. Claws are held from the reference action because
-    hand message layouts differ between qiangnao and claw hardware.
+    normalized claw units. When ``hand_command_topic`` is configured, a
+    Qiangnao ``robotHandPosition`` command is reduced to the same 1-DoF hand
+    contract used by Kuavo deployment.
     """
 
     def __init__(self, config: RosTeleopConfig | None = None):
@@ -42,6 +52,8 @@ class RosTeleopAdapter(TeleopAdapter):
         self._latest_joy: Any | None = None
         self._latest_arm: np.ndarray | None = None
         self._latest_arm_time = 0.0
+        self._latest_hand: np.ndarray | None = None
+        self._latest_hand_time = 0.0
         self._last_action = np.zeros(ACTION_DIM, dtype=np.float32)
         self._ros: Any | None = None
         self._joy_type: Any | None = None
@@ -57,7 +69,7 @@ class RosTeleopAdapter(TeleopAdapter):
         try:
             import rospy
             from rospy.msg import AnyMsg
-            from kuavo_msgs.msg import JoySticks
+            from kuavo_msgs.msg import JoySticks, robotHandPosition
             from sensor_msgs.msg import JointState
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
@@ -71,6 +83,15 @@ class RosTeleopAdapter(TeleopAdapter):
             rospy.Subscriber(self.config.joystick_topic, AnyMsg, self._joy_callback, queue_size=1),
             rospy.Subscriber(self.config.arm_traj_topic, JointState, self._arm_callback, queue_size=1),
         ]
+        if self.config.hand_command_topic:
+            self._subs.append(
+                rospy.Subscriber(
+                    self.config.hand_command_topic,
+                    robotHandPosition,
+                    self._hand_command_callback,
+                    queue_size=1,
+                )
+            )
 
     def close(self) -> None:
         for sub in self._subs:
@@ -117,6 +138,24 @@ class RosTeleopAdapter(TeleopAdapter):
         self._latest_arm = np.deg2rad(position).astype(np.float32)
         self._latest_arm_time = self._now()
 
+    def _hand_command_callback(self, msg: Any) -> None:
+        def _positions(value: Any) -> np.ndarray:
+            # ROS uint8[] is commonly exposed as bytes under Python 3.
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                return np.frombuffer(value, dtype=np.uint8).astype(np.float32)
+            return np.asarray(value, dtype=np.float32).reshape(-1)
+
+        left = _positions(getattr(msg, "left_hand_position", ()))
+        right = _positions(getattr(msg, "right_hand_position", ()))
+        idx = int(self.config.qiangnao_scalar_index)
+        if idx < 0 or left.size <= idx or right.size <= idx:
+            return
+        grasp = np.asarray([left[idx], right[idx]], dtype=np.float32)
+        if not np.all(np.isfinite(grasp)):
+            return
+        self._latest_hand = np.clip(grasp / 100.0, 0.0, 1.0).astype(np.float32)
+        self._latest_hand_time = self._now()
+
     def _now(self) -> float:
         if self._ros is not None:
             try:
@@ -124,6 +163,23 @@ class RosTeleopAdapter(TeleopAdapter):
             except Exception:  # noqa: BLE001
                 pass
         return time.time()
+
+    def command_stream_status(self) -> dict[str, Any]:
+        """Return freshness diagnostics for collection preflight."""
+        now = self._now()
+        arm_age = now - self._latest_arm_time if self._latest_arm_time else float("inf")
+        hand_age = now - self._latest_hand_time if self._latest_hand_time else float("inf")
+        arm_ready = self._latest_arm is not None and arm_age <= self.config.teleop_timeout_s
+        hand_ready = self._latest_hand is not None and hand_age <= self.config.hand_command_timeout_s
+        return {
+            "ok": bool(arm_ready and (hand_ready if self.config.require_hand_command else True)),
+            "arm_topic": self.config.arm_traj_topic,
+            "arm_ready": bool(arm_ready),
+            "arm_age_s": float(arm_age) if np.isfinite(arm_age) else None,
+            "hand_topic": self.config.hand_command_topic,
+            "hand_ready": bool(hand_ready),
+            "hand_age_s": float(hand_age) if np.isfinite(hand_age) else None,
+        }
 
     def _button(self, msg: Any, name: str | None) -> bool:
         return bool(name and getattr(msg, name, False))
@@ -166,9 +222,18 @@ class RosTeleopAdapter(TeleopAdapter):
 
     def poll(self) -> TeleopEvent:
         msg = self._latest_joy
-        age = self._now() - self._latest_arm_time if self._latest_arm_time else float("inf")
-        fresh = self._latest_arm is not None and age <= self.config.teleop_timeout_s
-        left_active, right_active = self._active_sides(msg) if msg is not None else (False, False)
+        now = self._now()
+        arm_age = now - self._latest_arm_time if self._latest_arm_time else float("inf")
+        arm_fresh = self._latest_arm is not None and arm_age <= self.config.teleop_timeout_s
+        hand_age = now - self._latest_hand_time if self._latest_hand_time else float("inf")
+        hand_fresh = (
+            self._latest_hand is not None
+            and hand_age <= self.config.hand_command_timeout_s
+        )
+        if self.config.record_all_arm_commands:
+            left_active, right_active = True, True
+        else:
+            left_active, right_active = self._active_sides(msg) if msg is not None else (False, False)
         double_button_stop = bool(
             msg is not None
             and getattr(msg, "left_first_button_pressed", False)
@@ -182,14 +247,23 @@ class RosTeleopAdapter(TeleopAdapter):
                 action[:7] = self._latest_arm[:7]
             if right_active:
                 action[8:15] = self._latest_arm[7:]
-            self._last_action = action.copy()
-        active_and_fresh = bool(active and fresh)
+        if self._latest_hand is not None:
+            action[7] = self._latest_hand[0]
+            action[15] = self._latest_hand[1]
+        self._last_action = action.copy()
+        streams_fresh = arm_fresh and (
+            hand_fresh if self.config.require_hand_command else True
+        )
+        active_and_fresh = bool(active and streams_fresh)
         intervention_mask = np.zeros(ACTION_DIM, dtype=bool)
         if active_and_fresh:
             if left_active:
                 intervention_mask[:7] = True
             if right_active:
                 intervention_mask[8:15] = True
+            if hand_fresh:
+                intervention_mask[7] = True
+                intervention_mask[15] = True
         gesture_success, gesture_failure, gesture_abort = self._reward_button_event(
             self._button(msg, self.config.reward_button) if msg is not None else False
         )
@@ -213,6 +287,14 @@ class RosTeleopAdapter(TeleopAdapter):
             # The original Kuavo Quest3 FSM uses both left buttons for stop.
             stop=double_button_stop,
             deadman=active_and_fresh,
-            source="quest3_ik" if active_and_fresh else "none",
-            age_s=float(age) if np.isfinite(age) else None,
+            source=(
+                "quest3_command_stream"
+                if active_and_fresh and self.config.record_all_arm_commands
+                else "quest3_ik" if active_and_fresh else "none"
+            ),
+            age_s=(
+                float(max(arm_age, hand_age))
+                if active_and_fresh and self.config.require_hand_command
+                else float(arm_age) if np.isfinite(arm_age) else None
+            ),
         )

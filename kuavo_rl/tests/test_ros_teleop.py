@@ -61,6 +61,61 @@ def test_ros_teleop_stale_arm_is_fail_safe():
     assert event.action is None
 
 
+def test_ros_teleop_rl100_records_arm_and_qiangnao_command_without_grip_deadman():
+    adapter = RosTeleopAdapter(
+        RosTeleopConfig(
+            record_all_arm_commands=True,
+            require_hand_command=True,
+            hand_command_topic="/control_robot_hand_position",
+        )
+    )
+    adapter._arm_callback(SimpleNamespace(position=[90.0] * 14))
+    adapter._hand_command_callback(
+        SimpleNamespace(
+            left_hand_position=[25, 100, 25, 25, 25, 25],
+            right_hand_position=[80, 100, 80, 80, 80, 80],
+        )
+    )
+    adapter._joy_callback(_joy(left=0.0, right=0.0))
+
+    status = adapter.command_stream_status()
+    event = adapter.poll()
+
+    assert status["ok"] is True
+    assert event.is_intervention is True
+    assert event.source == "quest3_command_stream"
+    np.testing.assert_allclose(event.action[:7], np.pi / 2, atol=1e-6)
+    np.testing.assert_allclose(event.action[8:15], np.pi / 2, atol=1e-6)
+    assert event.action[7] == np.float32(0.25)
+    assert event.action[15] == np.float32(0.8)
+    assert event.intervention_mask.all()
+
+
+def test_ros_teleop_rl100_requires_fresh_hand_command():
+    adapter = RosTeleopAdapter(
+        RosTeleopConfig(
+            record_all_arm_commands=True,
+            require_hand_command=True,
+        )
+    )
+    adapter._arm_callback(SimpleNamespace(position=[0.0] * 14))
+    assert adapter.command_stream_status()["ok"] is False
+    event = adapter.poll()
+    assert event.is_intervention is False
+    assert event.action is None
+
+
+def test_ros_teleop_qiangnao_accepts_ros_uint8_bytes():
+    adapter = RosTeleopAdapter()
+    adapter._hand_command_callback(
+        SimpleNamespace(
+            left_hand_position=bytes([40, 100, 40, 40, 40, 40]),
+            right_hand_position=bytes([90, 100, 90, 90, 90, 90]),
+        )
+    )
+    np.testing.assert_allclose(adapter._latest_hand, [0.4, 0.9], atol=1e-6)
+
+
 def test_ros_teleop_unreserved_b_reward_gestures():
     clock = [0.0]
     adapter = RosTeleopAdapter(

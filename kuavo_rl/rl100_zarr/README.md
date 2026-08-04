@@ -13,8 +13,18 @@ Brain `/cam_h|l|r` 深度仍用 `configs/rl/rl100_zarr_collect.yaml`。
 
 ```text
 data/rl100/<task>/episodes/*.npz   # labeled episode staging
-data/rl100/<task>/demo.zarr          # RL-100 training dataset
+data/rl100/<task>/<name>.zarr      # RL-100 training dataset
 ```
+
+当前强脑手重采配置输出：
+
+```text
+data/rl100/grasp_8_4_v2/episodes/*.npz
+data/rl100/grasp_8_4_v2/grasp_8_4_v2.zarr
+```
+
+旧的 `third_party/RL-100/data/grasp_8_4.zarr` 存在 `action == state`、
+夹爪维恒定且超出 `[0,1]` 的问题，禁止用于 BC 训练。
 
 | field | shape | note |
 |-------|-------|------|
@@ -27,7 +37,7 @@ data/rl100/<task>/demo.zarr          # RL-100 training dataset
 ## Labels（与 main HIL 对齐）
 
 - **B 短按** → **success**
-- **B 长按**（≥ `chord_long_press_s`，默认 0.8s）→ **failure**（默认保留）
+- **B 长按**（≥ `chord_long_press_s`，默认 0.8s）→ **failure**（会暂存，但当前 BC build 不保留）
 - **Y 单击** → 开始录制（仅 RESET）
 - **Y 双击** → rerecord（丢弃当前，回 RESET）
 - **Y 长按** → 结束整场采集（仅 RESET；录制中请先用 B 结束）
@@ -40,13 +50,11 @@ data/rl100/<task>/demo.zarr          # RL-100 training dataset
 | 相机 | 型号 | 流 | 分辨率 / FPS |
 |------|------|----|--------------|
 | 头 | Orbbec Gemini | color+depth | 驱动默认 @ **30 Hz** |
-| 左/右腕 | RealSense D405 | **depth-only** | **640×480 @ 15 Hz** |
+| 左/右腕 | RealSense D405 | **depth-only** | **848×480 @ 30 Hz** |
 
 原因：
 - RL-100 zarr 只需要深度做点云，关腕部 color 可减半带宽
-- 左腕常在 **USB 2.1**；右腕 USB 3.2；两台固件不同（5.13 / 5.16）
-- 左腕 848×480 depth **最高仅 10/5 Hz**；右腕无 10 Hz profile（会回退 30 Hz）
-- 共同可用且稳定的 profile：**640×480 @ 15 Hz depth-only**
+- 当前 launch 统一使用 **848×480 @ 30 Hz depth-only**
 - `initial_reset:=true` + `respawn:=true` 缓解 D405 nodelet bond-break
 
 启动时可能出现 `rs2_set_region_of_interest` / `hwmon 0x75` 报错：**可忽略**（D405 不支持 AE ROI，已被 catch）。
@@ -79,7 +87,7 @@ roslaunch configs/launch/hil_upper_cams.launch
 确认三路有深度后再开 B：
 
 ```bash
-# 头 ~30Hz，腕 ~15Hz
+# 头、双腕目标均为 ~30Hz
 rostopic hz /camera/depth/image_raw/compressedDepth
 rostopic hz /left_wrist_camera/depth/image_rect_raw/compressedDepth
 rostopic hz /right_wrist_camera/depth/image_rect_raw/compressedDepth
@@ -108,12 +116,64 @@ bash scripts/rl/run_rl100_zarr_collect.sh preflight --check-ros --timeout-s 10
 bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live --build-after
 ```
 
+采集进程启动时还会自动检查下面两路 action 命令流，二者必须持续更新：
+
+```text
+/kuavo_arm_traj                 # 14-D 机械臂目标，消息内为 degree
+/control_robot_hand_position    # 强脑手左右各 6-D，范围 0..100
+```
+
+强脑手 state 从 `/dexhand/state` 读取。12 维顺序为：
+
+```text
+l_thumb, l_thumb_aux, l_index, l_middle, l_ring, l_pinky,
+r_thumb, r_thumb_aux, r_index, r_middle, r_ring, r_pinky
+```
+
+RL-100 的 16-D 契约为
+`[L7, left_gripper, R7, right_gripper]`。当前 1-DoF 强脑手映射取
+`/dexhand/state.position[0]` 和 `[6]`，并除以 100 归一化到 `[0,1]`；
+action 同样取左右 `robotHandPosition` 的第 0 维。
+
+以下情况会直接丢弃当前 episode，不写入 staging：
+
+- 机械臂或强脑手命令缺失/超过 0.2 秒未更新；
+- 机械臂所有 action 与同帧 state 无有效差异；
+- 左右手均没有至少 0.05 的归一化开合范围；
+- action 出现 NaN/Inf，或夹爪 action 超出 `[0,1]`。
+
+### 采集后验收
+
+```bash
+bash scripts/rl/run_rl100_zarr_collect.sh inspect \
+  --zarr-path data/rl100/grasp_8_4_v2/grasp_8_4_v2.zarr
+```
+
+必须满足：
+
+```text
+action_quality.ok: true
+arm_action_state_max_abs_rad > 0.0001
+left/right 至少一个 gripper_action_range >= 0.05
+gripper_action_min/max 均在 [0,1]
+```
+
+训练前将验收通过的数据复制到 RL-100 数据目录（旧数据保留作问题样本）：
+
+```bash
+cp -a data/rl100/grasp_8_4_v2/grasp_8_4_v2.zarr \
+  third_party/RL-100/data/grasp_8_4_v2.zarr
+```
+
 ### 其它
 
 ```bash
 python scripts/rl/collect_rl100_zarr.py smoke --task box_to_chest_v1
-python scripts/rl/collect_rl100_zarr.py build --config configs/rl/rl100_zarr_collect_upper_cams.yaml --overwrite
-python scripts/rl/collect_rl100_zarr.py inspect --task box_to_chest_v1
+python scripts/rl/collect_rl100_zarr.py --config configs/rl/rl100_zarr_collect_upper_cams.yaml \
+  build --overwrite
+python scripts/rl/collect_rl100_zarr.py --config configs/rl/rl100_zarr_collect_upper_cams.yaml \
+  inspect --zarr-path data/rl100/grasp_8_4_v2/grasp_8_4_v2.zarr
+python scripts/rl/verify_joint_map.py --live
 ```
 
 ## Real-robot notes
@@ -124,7 +184,8 @@ python scripts/rl/collect_rl100_zarr.py inspect --task box_to_chest_v1
 - `env_config`: `configs/rl/kuavo_hilserl_real_mvp.yaml`
 - Episode 结束靠 B；`live_max_steps` / `live_max_duration_s` 仅安全上限
 - 三相机深度缺一或 workspace 裁空点云会 **硬失败**
-- gripper 若 3s 无消息会 idle-seed 零帧，避免永远卡在 buffer
+- 末端类型必须为 `qiangnao`；观测话题为 `/dexhand/state`，不是 `/leju_claw_state`
+- action 命令流不再回退为 measured state；缺失时硬失败，避免再次生成 hold-policy 数据
 - `kuavo_rl/ros_msg_compat.py`：只注入 SDK 缺的 footPose6D，**不要**把整包 SDK `kuavo_msgs` 前置到 `PYTHONPATH`（会弄坏 `/sensors_data_raw` MD5）
 - 若腕相机进程退出（`Bond broken` / `finished cleanly`），先停干净再只开一次终端 A，再 collect
 - ROS master：见 `configs/rl/local/env.sh`（`ROS_MASTER_URI` / `ROS_IP`），脚本与终端 A 均自动/手动 source

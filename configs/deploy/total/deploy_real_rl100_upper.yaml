@@ -9,7 +9,7 @@
 env:
   inference_env: real
   only_arm: true
-  eef_type: leju_claw
+  eef_type: qiangnao
   platform_type: "5w"
   control_mode: joint
   which_arm: both

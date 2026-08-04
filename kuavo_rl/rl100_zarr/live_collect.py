@@ -32,6 +32,47 @@ class LiveEpisodeResult:
     path: str | None
 
 
+def episode_action_quality_errors(
+    states: list[np.ndarray],
+    actions: list[np.ndarray],
+    *,
+    min_arm_action_state_delta_rad: float,
+    require_gripper_motion: bool,
+    min_gripper_action_range: float,
+) -> list[str]:
+    """Reject invalid demonstration labels before writing an episode."""
+    if not states or len(states) != len(actions):
+        return [f"state/action length mismatch: {len(states)} != {len(actions)}"]
+    state = np.stack(states).astype(np.float32)
+    action = np.stack(actions).astype(np.float32)
+    if state.shape[1:] != (16,) or action.shape[1:] != (16,):
+        return [f"expected state/action (*,16), got {state.shape}/{action.shape}"]
+    if not np.all(np.isfinite(state)) or not np.all(np.isfinite(action)):
+        return ["state/action contains NaN or Inf"]
+
+    errors: list[str] = []
+    arm_idx = np.asarray([*range(7), *range(8, 15)], dtype=np.int64)
+    arm_delta = float(np.max(np.abs(action[:, arm_idx] - state[:, arm_idx])))
+    if arm_delta < float(min_arm_action_state_delta_rad):
+        errors.append(
+            "arm action is indistinguishable from measured state "
+            f"(max |action-state|={arm_delta:.6g} rad)"
+        )
+
+    grip = action[:, [7, 15]]
+    if np.any(grip < 0.0) or np.any(grip > 1.0):
+        errors.append(
+            f"gripper action outside [0,1] (min={grip.min():.6g}, max={grip.max():.6g})"
+        )
+    grip_range = np.ptp(grip, axis=0)
+    if require_gripper_motion and float(np.max(grip_range)) < float(min_gripper_action_range):
+        errors.append(
+            "no effective gripper command motion "
+            f"(left range={grip_range[0]:.6g}, right range={grip_range[1]:.6g})"
+        )
+    return errors
+
+
 class HoldStatePolicy:
     def predict_action_chunk(self, obs: dict) -> np.ndarray:
         state = np.asarray(obs["observation.state"], dtype=np.float32).reshape(-1)
@@ -133,6 +174,13 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     }
     allowed.setdefault("joystick_topic", config.joystick_topic)
     allowed.setdefault("arm_traj_topic", config.arm_traj_topic)
+    # RL-100 collection records the actual Quest/IK command streams. This is
+    # intentionally scoped here rather than changing generic HIL intervention.
+    allowed["hand_command_topic"] = config.hand_command_topic
+    allowed["hand_command_timeout_s"] = config.hand_command_timeout_s
+    allowed["qiangnao_scalar_index"] = config.qiangnao_scalar_index
+    allowed["record_all_arm_commands"] = True
+    allowed["require_hand_command"] = True
     # JoySticks field name — not the UI letter "B".
     allowed.setdefault("reward_button", "right_second_button_pressed")
     teleop = RosTeleopAdapter(RosTeleopConfig(**allowed))
@@ -159,6 +207,18 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         teleop.close()
         env.close()
         raise RuntimeError(f"depth/tf preflight failed: {pf}")
+
+    command_deadline = time.monotonic() + 8.0
+    command_pf = teleop.command_stream_status()
+    while not command_pf["ok"] and time.monotonic() < command_deadline:
+        rospy.sleep(0.05)
+        command_pf = teleop.command_stream_status()
+    _say(f"command-stream preflight: {command_pf}")
+    if not command_pf["ok"]:
+        pc_hub.close()
+        teleop.close()
+        env.close()
+        raise RuntimeError(f"arm/hand command preflight failed: {command_pf}")
 
     cal = load_stick_calibration()
     mod = ModifierStickDetector(stick=StickEdgeDetector(calibration=cal))
@@ -323,6 +383,10 @@ def _record_one_episode(
 
         if te is not None and te.is_intervention and te.action is not None:
             action = np.asarray(te.action, dtype=np.float32)
+        elif config.require_command_action:
+            _say("discarding episode: arm/hand command stream missing or stale")
+            result_type, stop_reason = "abort", "command_stream_unavailable"
+            break
         else:
             action = np.asarray(runner.select_action(obs).action, dtype=np.float32)
 
@@ -354,6 +418,23 @@ def _record_one_episode(
             path=None,
         )
 
+    quality_errors = episode_action_quality_errors(
+        states,
+        actions,
+        min_arm_action_state_delta_rad=config.min_arm_action_state_delta_rad,
+        require_gripper_motion=config.require_gripper_motion,
+        min_gripper_action_range=config.min_gripper_action_range,
+    )
+    if quality_errors:
+        _say("discarding episode: " + "; ".join(quality_errors))
+        return LiveEpisodeResult(
+            status="discarded",
+            episode_id=eid,
+            steps=len(states),
+            result_type="quality_failed",
+            path=None,
+        )
+
     path = save_episode_npz(
         episode_dir / f"{eid}_{result_type}.npz",
         states=states,
@@ -365,6 +446,10 @@ def _record_one_episode(
             "task": config.task,
             "deploy_config": config.deploy_config,
             "env_config": config.env_config,
+            "eef_type": "qiangnao",
+            "arm_action_topic": config.arm_traj_topic,
+            "hand_action_topic": config.hand_command_topic,
+            "qiangnao_scalar_index": config.qiangnao_scalar_index,
         },
     )
     return LiveEpisodeResult(

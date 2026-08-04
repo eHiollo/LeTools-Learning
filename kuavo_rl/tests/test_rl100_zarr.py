@@ -9,6 +9,7 @@ import pytest
 
 from kuavo_rl.contracts import ACTION_DIM, STATE_DIM
 from kuavo_rl.rl100_zarr.episode import append_labeled_episode
+from kuavo_rl.rl100_zarr.live_collect import episode_action_quality_errors
 from kuavo_rl.rl100_zarr.pointcloud import (
     build_rl100_point_cloud,
     depth_to_point_cloud,
@@ -73,6 +74,7 @@ def test_default_config_aligns_real_collect():
     assert cfg.env_config.endswith("kuavo_hilserl_real_mvp.yaml")
     assert cfg.require_all_cameras is True
     assert cfg.fail_on_empty_pointcloud is True
+    assert cfg.require_command_action is True
     assert all(c.depth_msg_type == "compressed_depth" for c in cfg.cameras)
     assert all("compressedDepth" in c.depth_topic for c in cfg.cameras)
 
@@ -80,6 +82,44 @@ def test_default_config_aligns_real_collect():
     assert yaml_cfg.task == "box_to_chest_v1"
     assert "deploy_total.yaml" in yaml_cfg.deploy_config
     assert yaml_cfg.live_max_steps >= 100_000
+
+    upper_cfg = load_rl100_collect_config(
+        "configs/rl/rl100_zarr_collect_upper_cams.yaml"
+    )
+    assert upper_cfg.task == "grasp_8_4_v2"
+    assert upper_cfg.only_success is True
+    assert upper_cfg.hand_command_topic == "/control_robot_hand_position"
+    assert upper_cfg.require_gripper_motion is True
+
+
+def test_episode_action_quality_rejects_hold_state_and_constant_gripper():
+    states = [np.zeros(STATE_DIM, dtype=np.float32) for _ in range(4)]
+    actions = [s.copy() for s in states]
+    errors = episode_action_quality_errors(
+        states,
+        actions,
+        min_arm_action_state_delta_rad=1e-4,
+        require_gripper_motion=True,
+        min_gripper_action_range=0.05,
+    )
+    assert any("indistinguishable" in error for error in errors)
+    assert any("no effective gripper" in error for error in errors)
+
+
+def test_episode_action_quality_accepts_real_arm_and_gripper_commands():
+    states = [np.zeros(STATE_DIM, dtype=np.float32) for _ in range(4)]
+    actions = [s.copy() for s in states]
+    for i, action in enumerate(actions):
+        action[0] = 0.01 * (i + 1)
+        action[7] = i / 3
+    errors = episode_action_quality_errors(
+        states,
+        actions,
+        min_arm_action_state_delta_rad=1e-4,
+        require_gripper_motion=True,
+        min_gripper_action_range=0.05,
+    )
+    assert errors == []
 
 
 def test_write_zarr_roundtrip(tmp_path: Path):

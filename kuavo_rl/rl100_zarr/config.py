@@ -83,6 +83,14 @@ class RL100CollectConfig:
     joystick_topic: str = "/quest_joystick_data"
     arm_traj_topic: str = "/kuavo_arm_traj"
     sensors_topic: str = "/sensors_data_raw"
+    hand_command_topic: str = "/control_robot_hand_position"
+    hand_command_timeout_s: float = 0.20
+    qiangnao_scalar_index: int = 0
+    # RL-100 labels must be command targets, never a silent hold-state fallback.
+    require_command_action: bool = True
+    min_arm_action_state_delta_rad: float = 1e-4
+    require_gripper_motion: bool = False
+    min_gripper_action_range: float = 0.05
     confirm_live: bool = False
     shadow_mode: bool = True
     # Real-robot HIL collect wiring (same as hil_collection_real_v001).
@@ -161,6 +169,19 @@ class RL100CollectConfig:
             joystick_topic=str(raw.get("joystick_topic", "/quest_joystick_data")),
             arm_traj_topic=str(raw.get("arm_traj_topic", "/kuavo_arm_traj")),
             sensors_topic=str(raw.get("sensors_topic", "/sensors_data_raw")),
+            hand_command_topic=str(
+                raw.get("hand_command_topic", "/control_robot_hand_position")
+            ),
+            hand_command_timeout_s=float(raw.get("hand_command_timeout_s", 0.20)),
+            qiangnao_scalar_index=int(raw.get("qiangnao_scalar_index", 0)),
+            require_command_action=bool(raw.get("require_command_action", True)),
+            min_arm_action_state_delta_rad=float(
+                raw.get("min_arm_action_state_delta_rad", 1e-4)
+            ),
+            require_gripper_motion=bool(raw.get("require_gripper_motion", False)),
+            min_gripper_action_range=float(
+                raw.get("min_gripper_action_range", 0.05)
+            ),
             confirm_live=bool(raw.get("confirm_live", False)),
             shadow_mode=bool(raw.get("shadow_mode", True)),
             deploy_config=str(

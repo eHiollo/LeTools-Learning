@@ -3,7 +3,7 @@
 Static joint-map preflight for Kuavo v62.
 
 Default mode is OFFLINE (prints expected map, no robot motion).
-Use --live with ROS up; it only reads /sensors_data_raw (+ optional claw) and
+Use --live with ROS up; it only reads /sensors_data_raw (+ optional end effector) and
 never publishes policy actions.
 """
 
@@ -51,19 +51,38 @@ def _read_one_sensors(timeout_s: float = 5.0) -> dict:
         "joint_q": joint_q.tolist(),
     }
     try:
-        from kuavo_msgs.msg import lejuClawState
+        from sensor_msgs.msg import JointState
 
-        claw = rospy.wait_for_message("/leju_claw_state", lejuClawState, timeout=2.0)
-        # Best-effort fields; message layout may vary by firmware.
-        data = getattr(claw, "data", None)
-        if data is not None and hasattr(data, "position"):
-            out["claw_position"] = list(data.position)
-        elif hasattr(claw, "position"):
-            out["claw_position"] = list(claw.position)
-        else:
-            out["claw_raw_fields"] = [a for a in dir(claw) if not a.startswith("_")]
+        hand = rospy.wait_for_message("/dexhand/state", JointState, timeout=2.0)
+        position = np.asarray(hand.position, dtype=np.float32)
+        out["qiangnao"] = {
+            "joint_names": list(hand.name),
+            "position_0_100": position.tolist(),
+            "grasp_1d_norm": (
+                [float(position[0] / 100.0), float(position[6] / 100.0)]
+                if position.size >= 12
+                else None
+            ),
+        }
     except Exception as exc:  # noqa: BLE001
-        out["claw_error"] = str(exc)
+        out["qiangnao_error"] = str(exc)
+    if "qiangnao" not in out:
+        try:
+            from kuavo_msgs.msg import lejuClawState
+
+            claw = rospy.wait_for_message("/leju_claw_state", lejuClawState, timeout=2.0)
+            # Best-effort fallback for robots equipped with Leju claw.
+            data = getattr(claw, "data", None)
+            if data is not None and hasattr(data, "position"):
+                out["claw_position"] = list(data.position)
+            elif hasattr(claw, "position"):
+                out["claw_position"] = list(claw.position)
+            else:
+                out["claw_raw_fields"] = [
+                    a for a in dir(claw) if not a.startswith("_")
+                ]
+        except Exception as exc:  # noqa: BLE001
+            out["claw_error"] = str(exc)
     return out
 
 
@@ -112,6 +131,7 @@ def live_report(map_path: Path | None, timeout_s: float = 5.0) -> dict:
             for k in ("claw_position", "claw_error", "claw_raw_fields")
             if k in raw
         },
+        "qiangnao": raw.get("qiangnao"),
         "checks": {
             "dim_known_in_slice_table": dim in ARM_SLICE_BY_RAW_DIM,
             "preferred_raw_dim_28": dim == RAW_STATE_DIM_V62,
@@ -133,6 +153,18 @@ def live_report(map_path: Path | None, timeout_s: float = 5.0) -> dict:
     if not report["checks"]["arm14_abs_max_lt_pi"]:
         report["warnings"].append("arm14 abs max >= pi; units may be deg not rad.")
         report["ok"] = False
+    if raw.get("qiangnao") is not None:
+        hand_pos = raw["qiangnao"].get("position_0_100", [])
+        hand_ok = len(hand_pos) >= 12 and bool(
+            np.all(np.isfinite(hand_pos))
+            and np.min(hand_pos) >= 0.0
+            and np.max(hand_pos) <= 100.0
+        )
+        report["checks"]["qiangnao_12d_in_0_100"] = hand_ok
+        if not hand_ok:
+            report["warnings"].append(
+                "/dexhand/state is not a finite 12-D position vector in [0,100]."
+            )
     return report
 
 

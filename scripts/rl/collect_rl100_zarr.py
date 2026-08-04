@@ -62,6 +62,16 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         "env_config": cfg.env_config,
         "require_all_cameras": cfg.require_all_cameras,
         "fail_on_empty_pointcloud": cfg.fail_on_empty_pointcloud,
+        "command_topics": {
+            "arm": cfg.arm_traj_topic,
+            "hand": cfg.hand_command_topic,
+        },
+        "quality_gates": {
+            "require_command_action": cfg.require_command_action,
+            "min_arm_action_state_delta_rad": cfg.min_arm_action_state_delta_rad,
+            "require_gripper_motion": cfg.require_gripper_motion,
+            "min_gripper_action_range": cfg.min_gripper_action_range,
+        },
         "cameras": [
             {
                 "name": c.name,
@@ -160,11 +170,24 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     import numpy as np
     import zarr
 
+    from kuavo_rl.rl100_zarr.live_collect import episode_action_quality_errors
+
     cfg = _load_cfg(args)
     path = Path(args.zarr_path) if args.zarr_path else cfg.zarr_path()
     root = zarr.open(str(path), mode="r")
     data = root["data"]
     meta = root["meta"]
+    states = np.asarray(data["state"][:], dtype=np.float32)
+    actions = np.asarray(data["action"][:], dtype=np.float32)
+    quality_errors = episode_action_quality_errors(
+        [row for row in states],
+        [row for row in actions],
+        min_arm_action_state_delta_rad=cfg.min_arm_action_state_delta_rad,
+        require_gripper_motion=cfg.require_gripper_motion,
+        min_gripper_action_range=cfg.min_gripper_action_range,
+    )
+    arm_idx = [*range(7), *range(8, 15)]
+    gripper_range = np.ptp(actions[:, [7, 15]], axis=0)
     out = {
         "path": str(path),
         "attrs": dict(root.attrs),
@@ -172,6 +195,17 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "episode_ends": np.asarray(meta["episode_ends"][:]).tolist(),
         "n_transitions": int(data["action"].shape[0]),
         "reward_sum": float(np.asarray(data["reward"][:]).sum()),
+        "action_quality": {
+            "ok": not quality_errors,
+            "errors": quality_errors,
+            "arm_action_state_max_abs_rad": float(
+                np.max(np.abs(actions[:, arm_idx] - states[:, arm_idx]))
+            ),
+            "left_gripper_action_range": float(gripper_range[0]),
+            "right_gripper_action_range": float(gripper_range[1]),
+            "gripper_action_min": actions[:, [7, 15]].min(axis=0).tolist(),
+            "gripper_action_max": actions[:, [7, 15]].max(axis=0).tolist(),
+        },
     }
     _print(out)
     return 0
