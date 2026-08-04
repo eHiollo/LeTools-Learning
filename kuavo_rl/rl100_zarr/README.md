@@ -94,14 +94,28 @@ rostopic hz /right_wrist_camera/depth/image_rect_raw/compressedDepth
 ```
 
 
-查看头相机画面
+查看头相机画面（在自己电脑浏览器打开；SSH 到机器人后启动服务）
+
 ```bash
 source /opt/ros/noetic/setup.bash
 source ~/kuavo_ros_application/devel/setup.bash
 source ~/.bashrc
+# 若 8080 已被占用说明已在跑，无需重复启动
 rosrun web_video_server web_video_server _port:=8080
 ```
-http://10.10.31.37:8080/stream_viewer?topic=/camera/color/image_raw
+
+Orbbec gemini_330 实际 topic 为 `cam2`/`cam3`（非 `/camera/color/...`）：
+
+```bash
+rostopic hz /camera/cam2/image_raw/compressed   # 应 ~30–43 Hz
+```
+
+浏览器（优先用有线 IP `192.168.26.12`，WiFi 为 `10.10.31.37`）：
+
+```
+http://192.168.26.12:8080/stream_viewer?topic=/camera/cam2/image_raw/compressed
+# 或 cam3：.../camera/cam3/image_raw/compressed
+```
 
 ### 终端 B — 采集
 
@@ -182,7 +196,8 @@ python scripts/rl/verify_joint_map.py --live
   - **只等 joint_q + gripper**（RGB 不进 zarr，避免腕相机 RGB 掉线卡住）
   - 点云来自深度 hub，不是 gym RGB
 - `env_config`: `configs/rl/kuavo_hilserl_real_mvp.yaml`
-- Episode 结束靠 B；`live_max_steps` / `live_max_duration_s` 仅安全上限
+- Episode 结束靠 B（短按=success，长按≥0.8s=failure）；`live_max_steps` / `live_max_duration_s` 仅安全上限
+- **不要**在 RECORD 中双击 Y（那是 rerecord/丢弃）；Y 单击在 RECORD 中会被忽略
 - 三相机深度缺一或 workspace 裁空点云会 **硬失败**
 - 末端类型必须为 `qiangnao`；观测话题为 `/dexhand/state`，不是 `/leju_claw_state`
 - action 命令流不再回退为 measured state；缺失时硬失败，避免再次生成 hold-policy 数据

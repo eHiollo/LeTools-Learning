@@ -19,8 +19,20 @@ from kuavo_rl.rl100_zarr.ros_depth import DepthPointCloudHub
 from kuavo_rl.rl100_zarr.staging import save_episode_npz
 
 
+_SEP = "===================================================="
+_SUBSEP = "----------------------------------------------------"
+
+
 def _say(msg: str) -> None:
     print(f"[rl100-collect] {msg}", flush=True)
+
+
+def _rule(*, sub: bool = False) -> None:
+    _say(_SUBSEP if sub else _SEP)
+
+
+def _totals_str(*, saved: int, fail: int, discard: int, attempts: int) -> str:
+    return f"saved={saved}  fail={fail}  discard={discard}  attempts={attempts}"
 
 
 @dataclass
@@ -30,6 +42,7 @@ class LiveEpisodeResult:
     steps: int
     result_type: str
     path: str | None
+    stop_reason: str = "unknown"
 
 
 def episode_action_quality_errors(
@@ -236,65 +249,72 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         event_src = None
 
     results: list[dict[str, Any]] = []
+    attempt = 0
+    n_saved_success = 0
+    n_saved_failure = 0
+    n_discard = 0
     lp = f"{long_press_s:g}s"
-    _say("========== RL-100 zarr live collect (REAL) ==========")
+    _rule()
+    _say("RL-100 zarr live collect (REAL)")
     _say(f"task={config.task}  staging={episode_dir}")
     _say(f"deploy={deploy_config}  env={env_config}")
-    _say(f"episode_control={episode_control}")
-    _say(
-        f"episode ceiling steps={live_max_steps} duration_s={live_max_duration_s} "
-        f"(B ends episode; defaults match HIL safety)"
-    )
+    _say(f"episode_control={episode_control}  ceiling steps={live_max_steps}")
     if episode_control == "quest_y_button":
-        _say("Y single click     → start recording (RESET only)")
-        _say("Y double-click     → rerecord (discard)")
-        _say(f"Y long press (≥{lp}) → end session (RESET only)")
-        _say("Right stick        → free for waist/chassis")
+        _say(f"Y click → start  |  Y double → rerecord  |  Y long (≥{lp}) → end session")
+        _say("Right stick free for waist/chassis")
     elif episode_control == "quest_a_button":
-        _say("A click            → start recording (RESET only)")
-        _say("A double-click     → rerecord")
-        _say(f"A hold ≥{lp}       → end session (RESET only)")
+        _say(f"A click → start  |  A double → rerecord  |  A long (≥{lp}) → end session")
     else:
-        _say("Hold Y + stick →   → start recording (RESET only)")
-        _say("Hold Y + stick ←   → rerecord")
-        _say(f"Hold Y + stick ↓ (≥{lp}) → end session (RESET only)")
-    _say("B short press      → SUCCESS + end")
-    _say(f"B long press (≥{lp}) → FAILURE + end")
-    _say("Failures are staged by default; use build --only-success to drop them")
-    _say("====================================================")
+        _say(f"Y+stick → start  |  Y+stick ← rerecord  |  Y+stick ↓ (≥{lp}) → end")
+    _say(f"B short → SUCCESS  |  B long (≥{lp}) → FAILURE")
+    _say("only_success build drops failures; abort/rerecord never staged")
+    _rule()
 
+    session_status = "done"
     try:
         while not rospy.is_shutdown():
-            _say("RESET — teleop ok, not recording. Y click to start.")
+            next_n = attempt + 1
+            _rule()
+            _say(
+                f"[RESET]  ready  |  next=#{next_n}  "
+                + _totals_str(
+                    saved=n_saved_success,
+                    fail=n_saved_failure,
+                    discard=n_discard,
+                    attempts=attempt,
+                )
+            )
+            _say(f"         Y click → start   |   Y long (≥{lp}) → end session")
+            _rule()
             # Reset once per idle phase (HIL idle_reset); do NOT reset every tick.
             obs, _ = env.reset()
             teleop.set_reference_action(obs["observation.state"])
+            teleop.reset()
+            end_session = False
             while not rospy.is_shutdown():
-                te = teleop.poll()
+                # Do NOT call teleop.poll() here: env.step() already polls once.
+                # Double-polling eats B short-press edges (success is one-shot).
                 ev = event_src.poll() if event_src is not None else None
                 et = getattr(ev, "event_type", None) if ev is not None else None
                 if et == "right_stick_right":
                     break
                 if et in {"right_stick_down", "collection_complete"}:
-                    _say("session end requested")
-                    return {
-                        "status": "ended",
-                        "results": results,
-                        "episode_dir": str(episode_dir),
-                    }
-                if te is not None and te.is_intervention and te.action is not None:
-                    obs, _, term, trunc, _info = env.step(te.action)
-                else:
-                    obs, _, term, trunc, _info = env.step(obs["observation.state"])
+                    end_session = True
+                    break
+                # Env applies Quest grip intervention internally from its own poll.
+                obs, _, term, trunc, _info = env.step(obs["observation.state"])
                 teleop.set_reference_action(obs["observation.state"])
                 if term or trunc:
                     obs, _ = env.reset()
                     teleop.set_reference_action(obs["observation.state"])
+                    teleop.reset()
                 time.sleep(1.0 / max(config.fps, 1.0))
 
-            if rospy.is_shutdown():
+            if end_session or rospy.is_shutdown():
+                session_status = "ended" if end_session else session_status
                 break
 
+            attempt += 1
             ep = _record_one_episode(
                 env=env,
                 runner=runner,
@@ -303,7 +323,14 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
                 pc_hub=pc_hub,
                 config=config,
                 episode_dir=episode_dir,
+                attempt=attempt,
             )
+            if ep.status == "saved" and ep.result_type == "success":
+                n_saved_success += 1
+            elif ep.status == "saved" and ep.result_type == "failure":
+                n_saved_failure += 1
+            else:
+                n_discard += 1
             results.append(
                 {
                     "status": ep.status,
@@ -311,12 +338,28 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
                     "steps": ep.steps,
                     "result_type": ep.result_type,
                     "path": ep.path,
+                    "stop_reason": ep.stop_reason,
+                    "attempt": attempt,
                 }
             )
+            outcome = "SAVED" if ep.status == "saved" else "DISCARDED"
+            _rule(sub=True)
             _say(
-                f"episode status={ep.status} type={ep.result_type} "
-                f"steps={ep.steps} path={ep.path}"
+                f"[DONE  #{attempt}]   {outcome}  {ep.result_type}  "
+                f"steps={ep.steps}  reason={ep.stop_reason}"
             )
+            if ep.path:
+                _say(f"         path={ep.path}")
+            _say(
+                "         totals: "
+                + _totals_str(
+                    saved=n_saved_success,
+                    fail=n_saved_failure,
+                    discard=n_discard,
+                    attempts=attempt,
+                )
+            )
+            _rule()
     finally:
         if event_src is not None:
             event_src.close()
@@ -324,7 +367,59 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         teleop.close()
         env.close()
 
-    return {"status": "done", "results": results, "episode_dir": str(episode_dir)}
+    _rule()
+    _say(
+        f"[SESSION]  {session_status}  |  "
+        + _totals_str(
+            saved=n_saved_success,
+            fail=n_saved_failure,
+            discard=n_discard,
+            attempts=attempt,
+        )
+    )
+    _say(f"staging={episode_dir}")
+    _rule()
+    return {
+        "status": session_status,
+        "results": results,
+        "episode_dir": str(episode_dir),
+        "attempts": attempt,
+        "saved_success": n_saved_success,
+        "saved_failure": n_saved_failure,
+        "discard": n_discard,
+    }
+
+
+def _label_from_teleop_info(info: dict | None) -> tuple[str, str] | None:
+    """Map env info teleop_events → (result_type, stop_reason)."""
+    te = (info or {}).get("teleop_events") or {}
+    if te.get("success"):
+        return "success", "success_button"
+    if te.get("failure"):
+        return "failure", "failure_button"
+    if te.get("abort") or te.get("stop"):
+        return "abort", "abort_button" if te.get("abort") else "estop"
+    # Manual B also sets reward_source when env consumes the edge in step().
+    src = str((info or {}).get("reward_source", "") or "")
+    if src == "manual_success":
+        return "success", "success_button"
+    if src == "manual_failure":
+        return "failure", "failure_button"
+    if src == "manual_abort":
+        return "abort", "abort_button"
+    return None
+
+
+def _action_from_step_info(info: dict | None) -> np.ndarray | None:
+    """Prefer the command actually applied / seen by env.step's single teleop.poll()."""
+    info = info or {}
+    replay = info.get("teleop_replay_action")
+    if replay is not None:
+        return np.asarray(replay, dtype=np.float32).reshape(-1)
+    raw = info.get("teleop_raw_action")
+    if raw is not None and info.get("is_intervention"):
+        return np.asarray(raw, dtype=np.float32).reshape(-1)
+    return None
 
 
 def _record_one_episode(
@@ -336,6 +431,7 @@ def _record_one_episode(
     pc_hub: DepthPointCloudHub,
     config: RL100CollectConfig,
     episode_dir: Path,
+    attempt: int = 1,
 ) -> LiveEpisodeResult:
     eid = uuid.uuid4().hex[:12]
     states: list[np.ndarray] = []
@@ -343,10 +439,14 @@ def _record_one_episode(
     pcs: list[np.ndarray] = []
     result_type = "abort"
     stop_reason = "unknown"
+    tag = f"[RECORD #{attempt}]"
 
     obs, info = env.reset()
     teleop.set_reference_action(obs["observation.state"])
-    _say(f"RECORD {eid} — end with B short=success / B long=failure")
+    # Clear any half-pressed B gesture left over from RESET idle polling.
+    teleop.reset()
+    _say(f"{tag}  id={eid}")
+    _say("         B short=success  |  B long=failure  |  Y double=rerecord")
 
     dt = 1.0 / max(config.fps, 1.0)
     t0 = time.monotonic()
@@ -361,51 +461,56 @@ def _record_one_episode(
             result_type, stop_reason = "abort", "max_duration"
             break
 
-        te = teleop.poll()
-        if te is not None and te.success:
-            result_type, stop_reason = "success", "success_button"
-            break
-        if te is not None and te.failure:
-            result_type, stop_reason = "failure", "failure_button"
-            break
-        if te is not None and te.abort:
-            result_type, stop_reason = "abort", "abort_button"
-            break
-
         ev = event_src.poll() if event_src is not None else None
         et = getattr(ev, "event_type", None) if ev is not None else None
         if et == "right_stick_left":
             result_type, stop_reason = "abort", "rerecord"
+            _say(f"{tag}  Y double-click → rerecord (discard)")
             break
-        if et in {"right_stick_down", "collection_complete"}:
-            result_type, stop_reason = "abort", "collection_complete"
-            break
-
-        if te is not None and te.is_intervention and te.action is not None:
-            action = np.asarray(te.action, dtype=np.float32)
-        elif config.require_command_action:
-            _say("discarding episode: arm/hand command stream missing or stale")
-            result_type, stop_reason = "abort", "command_stream_unavailable"
-            break
-        else:
-            action = np.asarray(runner.select_action(obs).action, dtype=np.float32)
+        if et == "right_stick_right":
+            _say(f"{tag}  Y click ignored — end with B (short=success, long=failure)")
+        elif et in {"right_stick_down", "collection_complete"}:
+            _say(f"{tag}  Y long ignored — end with B first, then Y long in RESET")
 
         try:
             pc = pc_hub.get_point_cloud()
         except Exception as exc:  # noqa: BLE001
-            _say(f"pointcloud failed: {exc}")
+            _say(f"{tag}  pointcloud failed: {exc}")
             result_type, stop_reason = "abort", "pointcloud_error"
             break
 
-        states.append(np.asarray(obs["observation.state"], dtype=np.float32).copy())
-        actions.append(action.copy())
+        # Hold as step input only. Env.step polls teleop once (B labels + command
+        # stream). Never teleop.poll() here — that would steal B short-press edges.
+        state_t = np.asarray(obs["observation.state"], dtype=np.float32).copy()
+        hold = np.asarray(runner.select_action(obs).action, dtype=np.float32)
+        obs, _, term, trunc, info = env.step(hold)
+        teleop.set_reference_action(obs["observation.state"])
+
+        labeled = _label_from_teleop_info(info)
+        action = _action_from_step_info(info)
+        if action is None:
+            if config.require_command_action:
+                _say(f"{tag}  discarding: arm/hand command stream missing or stale")
+                result_type, stop_reason = "abort", "command_stream_unavailable"
+                break
+            action = hold
+
+        states.append(state_t)
+        actions.append(np.asarray(action, dtype=np.float32).copy())
         pcs.append(pc.copy())
 
-        obs, _, term, trunc, info = env.step(action)
-        teleop.set_reference_action(obs["observation.state"])
+        if labeled is not None:
+            result_type, stop_reason = labeled
+            _say(f"{tag}  B → {result_type} — ending episode")
+            break
+
         if term or trunc:
-            if result_type == "abort" and stop_reason == "unknown":
-                stop_reason = str(info.get("fault_code", "env_terminate"))
+            stop_reason = str(info.get("fault_code", "env_terminate"))
+            result_type = "abort"
+            _say(
+                f"{tag}  env stop at step {len(states)} "
+                f"(fault={stop_reason}, source={info.get('reward_source')}) — discard"
+            )
             break
         time.sleep(dt)
 
@@ -416,6 +521,7 @@ def _record_one_episode(
             steps=len(states),
             result_type=result_type,
             path=None,
+            stop_reason=stop_reason,
         )
 
     quality_errors = episode_action_quality_errors(
@@ -426,13 +532,14 @@ def _record_one_episode(
         min_gripper_action_range=config.min_gripper_action_range,
     )
     if quality_errors:
-        _say("discarding episode: " + "; ".join(quality_errors))
+        _say(f"{tag}  discarding: " + "; ".join(quality_errors))
         return LiveEpisodeResult(
             status="discarded",
             episode_id=eid,
             steps=len(states),
             result_type="quality_failed",
             path=None,
+            stop_reason="quality_failed",
         )
 
     path = save_episode_npz(
@@ -458,4 +565,5 @@ def _record_one_episode(
         steps=len(states),
         result_type=result_type,
         path=str(path),
+        stop_reason=stop_reason,
     )
