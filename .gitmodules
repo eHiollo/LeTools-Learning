@@ -3,4 +3,4 @@
 	url = https://github.com/huggingface/lerobot.git
 [submodule "third_party/RL-100"]
 	path = third_party/RL-100
-	url = https://github.com/Lei-Kun/RL-100.git
+	url = https://github.com/eHiollo/RL-100.git
