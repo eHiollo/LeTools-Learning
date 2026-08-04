@@ -38,6 +38,25 @@ def test_should_keep_episode_filter():
     assert not should_keep_episode("abort", only_success=False)
 
 
+def test_label_from_teleop_info_reads_env_step_events():
+    """live_collect must label from env info — not a second teleop.poll()."""
+    from kuavo_rl.rl100_zarr.live_collect import _label_from_teleop_info
+
+    assert _label_from_teleop_info({"teleop_events": {"success": True}}) == (
+        "success",
+        "success_button",
+    )
+    assert _label_from_teleop_info({"teleop_events": {"failure": True}}) == (
+        "failure",
+        "failure_button",
+    )
+    assert _label_from_teleop_info({"reward_source": "manual_success"}) == (
+        "success",
+        "success_button",
+    )
+    assert _label_from_teleop_info({"teleop_events": {}, "reward_source": "step_zero"}) is None
+
+
 def test_depth_to_pc_and_downsample():
     depth = np.full((48, 64), 1.0, dtype=np.float32)
     fx = fy = 100.0

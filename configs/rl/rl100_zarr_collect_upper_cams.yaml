@@ -63,7 +63,7 @@ min_arm_action_state_delta_rad: 0.0001
 require_gripper_motion: true
 min_gripper_action_range: 0.05
 
-confirm_live: false
+confirm_live: true
 shadow_mode: true
 # State-only gym obs (joint+claw). Point clouds come from DepthPointCloudHub below.
 # Do NOT use deploy_total.yaml here — that waits on Brain /cam_h|l|r H.265.

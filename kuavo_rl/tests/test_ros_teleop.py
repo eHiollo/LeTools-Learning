@@ -165,3 +165,32 @@ def test_ros_teleop_unreserved_b_reward_gestures():
     event = poll(False)
     assert event.success is True
     assert event.failure is False
+
+
+def test_ros_teleop_b_success_is_one_shot_do_not_double_poll():
+    """Regression: live_collect used to poll() then env.step()→poll() again.
+
+    B short-press success is edge-triggered and only survives one poll().
+    The second poll in the same control tick ate the label → abort discard.
+    """
+    clock = [0.0]
+    adapter = RosTeleopAdapter(
+        RosTeleopConfig(
+            reward_button="right_second_button_pressed",
+            reward_long_press_s=0.80,
+        )
+    )
+    adapter._reward_clock = lambda: clock[0]
+
+    adapter._joy_callback(_joy(success=True))
+    clock[0] = 0.05
+    adapter.poll()  # press edge
+    clock[0] = 0.10
+    adapter._joy_callback(_joy(success=False))
+    # First poll (as env.step would) gets success.
+    event = adapter.poll()
+    assert event.success is True
+    # Second poll in the same tick sees nothing — the old live_collect bug.
+    event2 = adapter.poll()
+    assert event2.success is False
+    assert event2.failure is False
