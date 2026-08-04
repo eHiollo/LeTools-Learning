@@ -73,7 +73,15 @@ def normalize_kuavo_obs(raw_obs: dict) -> dict:
         out[key] = img
 
     # optional timing metadata
-    for meta in ("observation_age_s", "cross_topic_skew_s", "raw_joint_dim"):
+    for meta in (
+        "observation_age_s",
+        "cross_topic_skew_s",
+        "raw_joint_dim",
+        "state_stamp_s",
+        "hand_stamp_s",
+        "state_age_s",
+        "hand_age_s",
+    ):
         if meta in raw_obs:
             out[meta] = raw_obs[meta]
     return out

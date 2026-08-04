@@ -161,8 +161,12 @@ def build_env_config_from_dict(raw: dict[str, Any]) -> EnvConfig:
             joint_position_high=np.asarray(safety_raw["joint_position_high"], dtype=np.float32),
             max_delta_rad=np.asarray(safety_raw["max_delta_rad"], dtype=np.float32),
             observation_max_age_s=float(safety_raw.get("observation_max_age_s", 0.15)),
+            max_cross_topic_skew_s=float(safety_raw.get("max_cross_topic_skew_s", 0.10)),
             max_consecutive_clips=int(safety_raw.get("max_consecutive_clips", 3)),
             control_dt_s=float(safety_raw.get("control_dt_s", 0.1)),
+            require_deadman_for_teleop=bool(
+                safety_raw.get("require_deadman_for_teleop", True)
+            ),
         )
     return EnvConfig(
         fps=int(env_raw.get("fps", 10)),

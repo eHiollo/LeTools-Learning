@@ -24,7 +24,21 @@ class _CamSample:
     depth_m: np.ndarray | None = None
     intrinsics: tuple[float, float, float, float] | None = None
     stamp: float = 0.0
+    received_at: float = 0.0
     frame_id: str = ""
+
+
+@dataclass(frozen=True)
+class PointCloudSample:
+    """Fused cloud plus the real source timing used by deployment safety checks."""
+
+    points: np.ndarray
+    fused_stamp_s: float
+    received_at_s: float
+    oldest_age_s: float
+    max_camera_skew_s: float
+    camera_stamps: dict[str, float]
+    valid_points: int
 
 
 def _decode_compressed_depth(msg: Any) -> np.ndarray | None:
@@ -133,11 +147,19 @@ class DepthPointCloudHub:
         self._bridge = None
 
     def _store_depth(self, name: str, depth_m: np.ndarray, msg: Any) -> None:
+        received_at = time.time()
+        header = getattr(msg, "header", None)
+        stamp = 0.0
+        try:
+            stamp = float(header.stamp.to_sec()) if header is not None else 0.0
+        except Exception:  # noqa: BLE001
+            stamp = 0.0
         with self._lock:
             sample = self._samples.setdefault(name, _CamSample())
             sample.depth_m = depth_m
-            sample.stamp = time.time()
-            if getattr(msg, "header", None) is not None and msg.header.frame_id:
+            sample.stamp = stamp if stamp > 0 else received_at
+            sample.received_at = received_at
+            if header is not None and header.frame_id:
                 sample.frame_id = str(msg.header.frame_id)
 
     def _on_info(self, name: str, msg: Any) -> None:
@@ -186,7 +208,14 @@ class DepthPointCloudHub:
         except Exception:  # noqa: BLE001
             return None
 
-    def get_point_cloud(self, *, require_all_enabled: bool | None = None) -> np.ndarray:
+    def get_point_cloud_sample(
+        self,
+        *,
+        require_all_enabled: bool | None = None,
+        max_depth_age_s: float | None = None,
+        max_camera_skew_s: float | None = None,
+    ) -> PointCloudSample:
+        """Fuse only current samples; a stale or skewed source fails closed."""
         require_all = (
             self.config.require_all_cameras
             if require_all_enabled is None
@@ -194,17 +223,21 @@ class DepthPointCloudHub:
         )
         clouds: list[np.ndarray] = []
         missing: list[str] = []
+        camera_stamps: dict[str, float] = {}
+        received_times: list[float] = []
         with self._lock:
             snapshot = {
                 k: _CamSample(
                     v.depth_m.copy() if v.depth_m is not None else None,
                     v.intrinsics,
                     v.stamp,
+                    v.received_at,
                     v.frame_id,
                 )
                 for k, v in self._samples.items()
             }
 
+        now = time.time()
         for cam in self.config.cameras:
             if not cam.enabled:
                 continue
@@ -212,12 +245,18 @@ class DepthPointCloudHub:
             if sample is None or sample.depth_m is None or sample.intrinsics is None:
                 missing.append(cam.name)
                 continue
+            age = now - sample.received_at if sample.received_at else float("inf")
+            if max_depth_age_s is not None and age > max_depth_age_s:
+                missing.append(f"{cam.name}:stale({age:.3f}s)")
+                continue
             frame = sample.frame_id or cam.frame_id
             T = self._lookup_T_base_cam(frame)
             if T is None:
                 missing.append(f"{cam.name}:tf")
                 continue
             clouds.append(depth_to_point_cloud(sample.depth_m, sample.intrinsics, T))
+            camera_stamps[cam.name] = sample.stamp
+            received_times.append(sample.received_at)
 
         if require_all and missing:
             raise RuntimeError(f"missing depth/tf for cameras: {missing}")
@@ -226,9 +265,15 @@ class DepthPointCloudHub:
                 "no usable depth cameras; check topics / tf / camera_info "
                 f"(missing={missing})"
             )
+        stamps = list(camera_stamps.values())
+        skew = max(stamps) - min(stamps)
+        if max_camera_skew_s is not None and skew > max_camera_skew_s:
+            raise RuntimeError(
+                f"camera timestamp skew {skew:.3f}s > {max_camera_skew_s:.3f}s"
+            )
 
         x_range, y_range, z_range = self.config.workspace_ranges()
-        return build_rl100_point_cloud(
+        points = build_rl100_point_cloud(
             clouds,
             num_points=self.config.num_points,
             x_range=x_range,
@@ -237,6 +282,19 @@ class DepthPointCloudHub:
             raise_on_empty=self.config.fail_on_empty_pointcloud,
             min_points=self.config.min_workspace_points,
         )
+        return PointCloudSample(
+            points=points,
+            fused_stamp_s=min(stamps),
+            received_at_s=now,
+            oldest_age_s=max(now - t for t in received_times),
+            max_camera_skew_s=skew,
+            camera_stamps=camera_stamps,
+            valid_points=int(points.shape[0]),
+        )
+
+    def get_point_cloud(self, *, require_all_enabled: bool | None = None) -> np.ndarray:
+        """Compatibility wrapper for collection callers that do not need timing."""
+        return self.get_point_cloud_sample(require_all_enabled=require_all_enabled).points
 
     def preflight(self, timeout_s: float = 5.0) -> dict[str, Any]:
         """Wait briefly and report which cameras have depth+info (+tf attempt)."""
@@ -254,6 +312,9 @@ class DepthPointCloudHub:
                         "has_intrinsics": sample.intrinsics is not None,
                         "frame_id": sample.frame_id,
                         "age_s": (time.time() - sample.stamp) if sample.stamp else None,
+                        "received_age_s": (time.time() - sample.received_at)
+                        if sample.received_at
+                        else None,
                     }
             ready = [
                 v

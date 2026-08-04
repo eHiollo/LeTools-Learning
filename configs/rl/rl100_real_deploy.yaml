@@ -1,0 +1,63 @@
+# RL-100 real deployment.  This file is deliberately shadow-only until the
+# field-approved joint limits and startup pose are filled in below.
+checkpoint:
+  path: outputs/rl100/grasp_8_4_v2/checkpoints/latest.ckpt
+  device: cuda:0
+  model_source: auto
+
+inference:
+  deterministic: false
+  distill2mean: false
+  use_cm: auto
+  execute_steps: 1
+  control_hz: 10
+  timeout_s: 0.10
+  warmup_runs: 3
+
+observation:
+  pointcloud_config: configs/rl/rl100_zarr_collect_upper_cams.yaml
+  history_startup: repeat_first
+  state_max_age_s: 0.15
+  hand_max_age_s: 0.15
+  depth_max_age_s: 0.15
+  max_state_hand_skew_s: 0.10
+  max_camera_skew_s: 0.10
+  max_state_cloud_skew_s: 0.10
+
+robot:
+  deploy_config: configs/deploy/total/deploy_real_rl100_upper.yaml
+  expected_raw_joint_dims: [20]
+  expected_eef_type: qiangnao
+  publish_unit: rad_to_sdk
+
+safety:
+  # REQUIRED before live. Do not replace with broad [-pi, pi] placeholders.
+  arm_joint_low_rad: null
+  arm_joint_high_rad: null
+  max_arm_step_rad: 0.02
+  max_gripper_step: 0.05
+  max_arm_state_jump_rad: 0.05
+  max_gripper_state_jump: 0.10
+  max_consecutive_clips: 3
+  max_consecutive_source_failures: 1
+  max_episode_steps: 200
+  max_episode_duration_s: 20.0
+
+startup:
+  # REQUIRED before live, in canonical [L7, gL, R7, gR] order.
+  expected_pose16: null
+  max_arm_error_rad: 0.10
+  max_gripper_error: 0.15
+  require_physical_estop_ready: true
+  require_operator_start: true
+
+mode:
+  shadow: true
+  # Keep empty in git. The live CLI requires a non-empty one-time token.
+  live_confirmation_token: ""
+
+logging:
+  output_dir: logs/rl100_real
+  jsonl: true
+  save_predicted_chunks: true
+  save_pointcloud: false

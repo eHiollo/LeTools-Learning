@@ -62,7 +62,11 @@ class ObsBuffer:
         # === 初始化观测缓存 ===
         self.obs_buffer_size = {k: v["frequency"] for k, v in self.obs_key_map.items()}
         self.obs_buffer_data = {
-            k: {"data": deque(maxlen=v["frequency"]), "timestamp": deque(maxlen=v["frequency"])}
+            k: {
+                "data": deque(maxlen=v["frequency"]),
+                "timestamp": deque(maxlen=v["frequency"]),
+                "metadata": deque(maxlen=v["frequency"]),
+            }
             for k, v in self.obs_key_map.items()
         }
 
@@ -224,6 +228,7 @@ class ObsBuffer:
     def sensorsData_callback(self, msg: sensorsData, key: str, handle = dict):
         # Float64Array ()
         joint = msg.joint_data.joint_q
+        raw_joint_dim = len(joint)
         timestamp = msg.header.stamp.to_sec()
 
         # FK 计算需要双臂的14个关节（索引12-26）
@@ -236,7 +241,7 @@ class ObsBuffer:
         slice_value = handle.get("params", {}).get("slice", None)  
         joint = [x for slc in slice_value for x in joint[slc[0]:slc[1]]]
         # joint = torch.tensor(joint, dtype=torch.float32, device=self.device)
-        self._append_data(key, joint, timestamp)
+        self._append_data(key, joint, timestamp, {"raw_joint_dim": raw_joint_dim})
 
     def lejuClawState_callback(self, msg: lejuClawState, key: str, handle = dict):
         # Float64Array ()
@@ -263,9 +268,10 @@ class ObsBuffer:
         self._append_data(key, joint, msg.header.stamp.to_sec())
 
     # ===== 公共方法 =====
-    def _append_data(self, key, data, timestamp):
+    def _append_data(self, key, data, timestamp, metadata=None):
         self.obs_buffer_data[key]["data"].append(data)
         self.obs_buffer_data[key]["timestamp"].append(timestamp)
+        self.obs_buffer_data[key]["metadata"].append(dict(metadata or {}))
 
     def compute_dependent_obs(self, source_key, source_data, timestamp):
         for comp_key in self.source_to_computed.get(source_key, []):
@@ -337,6 +343,19 @@ class ObsBuffer:
             obs[k] = list(buf["data"])[-1]  # 取最新一帧
         return obs
 
+    def get_latest_obs_with_metadata(self):
+        """Return newest data plus the original ROS stamps/stream metadata."""
+        obs, metadata = {}, {}
+        for key, buf in self.obs_buffer_data.items():
+            if not buf["data"]:
+                raise RuntimeError(f"no observation buffered for {key}")
+            obs[key] = list(buf["data"])[-1]
+            metadata[key] = {
+                "stamp_s": float(list(buf["timestamp"])[-1]),
+                **dict(list(buf["metadata"])[-1]),
+            }
+        return obs, metadata
+
     def get_aligned_obs(self, reference_keys=["/cam_h/color/image_raw/compressed"], max_dt=0.01, ratio=1.0):
         """
         返回各观测时间上对齐的最新帧
@@ -384,4 +403,3 @@ class ObsBuffer:
                 aligned_obs[k] = data[idx]
 
         return aligned_obs
-

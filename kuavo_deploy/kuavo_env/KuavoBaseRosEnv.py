@@ -531,11 +531,15 @@ class KuavoBaseRosEnv(gym.Env):
     def safe_control_arm(self, target_position):
         try:
             self.robot.control_arm_joint_positions(target_position)
+            return True
         except RuntimeError as e:
             # 当机器人处于 command_pose_world 状态（底盘移动）时，无法控制手臂
             if "must be in stance state" in str(e):
                 log_robot.warning(f"⚠️  无法发送手臂命令：机器人当前状态不允许 (可能正在底盘移动)")
                 log_robot.debug(f"   详细错误: {e}")
+                # A rejected command is a hard deployment failure.  Do not let
+                # the policy runner record it as a successful publish.
+                raise RuntimeError("Kuavo rejected arm command: robot is not in stance") from e
             else:
                 raise
 
@@ -612,8 +616,9 @@ class KuavoBaseRosEnv(gym.Env):
             obs_from_buffer = self.obs_buffer.get_aligned_obs(reference_keys=None, max_dt=1/self.ros_rate,ratio=self.ratio)
             if obs_from_buffer is None or not all(v is not None for v in obs_from_buffer.values()):
                 obs_from_buffer = self.obs_buffer.get_aligned_obs(reference_keys=None, max_dt=float('inf'),ratio=self.ratio)
+            source_meta = {}
         else:
-            obs_from_buffer = self.obs_buffer.get_latest_obs()
+            obs_from_buffer, source_meta = self.obs_buffer.get_latest_obs_with_metadata()
         
         for k,v in obs_from_buffer.items():
             # remap key
@@ -655,6 +660,24 @@ class KuavoBaseRosEnv(gym.Env):
         log_robot.info(f"STATE: contained {state_keys}, concated value: {obs['observation.state']}")
 
         obs["observation.state"] = torch.from_numpy(obs["observation.state"]).float().unsqueeze(0)
+        # The generic env used to discard source stamps.  RL-100 real deployment
+        # must not infer freshness from local wall time, so expose them explicitly.
+        state_key = next((k for k in self.arm_state_keys if k == "joint_q" and k in source_meta), None)
+        hand_key = next(
+            (k for k in ("gripper", "qiangnao", "leju_claw", "rq2f85") if k in source_meta),
+            None,
+        )
+        if state_key is not None and hand_key is not None:
+            now = time.time()
+            state_stamp = float(source_meta[state_key]["stamp_s"])
+            hand_stamp = float(source_meta[hand_key]["stamp_s"])
+            obs["state_stamp_s"] = state_stamp
+            obs["hand_stamp_s"] = hand_stamp
+            obs["state_age_s"] = max(0.0, now - state_stamp)
+            obs["hand_age_s"] = max(0.0, now - hand_stamp)
+            obs["observation_age_s"] = max(obs["state_age_s"], obs["hand_age_s"])
+            obs["cross_topic_skew_s"] = abs(state_stamp - hand_stamp)
+            obs["raw_joint_dim"] = int(source_meta[state_key].get("raw_joint_dim", 0))
         return obs    
 
     def close(self):
@@ -667,6 +690,7 @@ class KuavoBaseRosEnv(gym.Env):
                     for k in self.obs_buffer.obs_buffer_data:
                         self.obs_buffer.obs_buffer_data[k]["data"].clear()
                         self.obs_buffer.obs_buffer_data[k]["timestamp"].clear()
+                        self.obs_buffer.obs_buffer_data[k]["metadata"].clear()
                 if hasattr(self.obs_buffer, 'ros_manager'):
                     self.obs_buffer.ros_manager = None
                 if hasattr(self.obs_buffer, 'control_signal_manager'):
