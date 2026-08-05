@@ -263,10 +263,6 @@ def _make_kuavo_gym(deploy_config: Path, *, max_episode_steps: int):
 
 def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     """Long-running VR session: raw rosbag by default, online cloud as fallback."""
-    from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
-
-    ensure_foot_pose_6d_msgs()
-
     config.validate_contract()
     if not config.confirm_live:
         raise RuntimeError(
@@ -275,8 +271,6 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
 
     import rospy
 
-    from kuavo_rl.act_runner import ActExecuteFirstRunner
-    from kuavo_rl.adapter import make_kuavo_hilserl_env
     from kuavo_rl.config import ActRunnerConfig, build_env_config_from_dict, load_yaml
     from kuavo_rl.hil_collect_live import _quiet_robot_logs
     from kuavo_rl.quest_episode_control import (
@@ -305,17 +299,27 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     long_press_s = float(getattr(config, "chord_long_press_s", 0.8) or 0.8)
 
     raw = load_yaml(env_config) if env_config.exists() else {"env": {}}
-    env_cfg = build_env_config_from_dict(raw)
-    env_cfg.shadow_mode = bool(getattr(config, "shadow_mode", True))
-    # Override short MVP episode limits — B ends episodes (same as HIL VR collect).
-    if getattr(env_cfg, "episode", None) is not None:
-        env_cfg.episode.max_steps = live_max_steps
-        env_cfg.episode.max_duration_s = live_max_duration_s
-    if getattr(env_cfg, "safety", None) is not None:
-        env_cfg.safety.max_consecutive_clips = 0
+    env = None
+    runner = None
+    if not raw_mode:
+        from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
+        from kuavo_rl.act_runner import ActExecuteFirstRunner
+        from kuavo_rl.adapter import make_kuavo_hilserl_env
 
-    _quiet_robot_logs()
-    kuavo_gym = _make_kuavo_gym(deploy_config, max_episode_steps=live_max_steps)
+        ensure_foot_pose_6d_msgs()
+        env_cfg = build_env_config_from_dict(raw)
+        env_cfg.shadow_mode = bool(getattr(config, "shadow_mode", True))
+        # Override short MVP episode limits — B ends episodes (same as HIL VR collect).
+        if getattr(env_cfg, "episode", None) is not None:
+            env_cfg.episode.max_steps = live_max_steps
+            env_cfg.episode.max_duration_s = live_max_duration_s
+        if getattr(env_cfg, "safety", None) is not None:
+            env_cfg.safety.max_consecutive_clips = 0
+
+        _quiet_robot_logs()
+        kuavo_gym = _make_kuavo_gym(deploy_config, max_episode_steps=live_max_steps)
+    else:
+        kuavo_gym = None
 
     teleop_raw = dict(raw.get("teleop", {}) or {}) if isinstance(raw, dict) else {}
     teleop_raw["reward_long_press_s"] = long_press_s
@@ -335,24 +339,27 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     allowed["require_hand_command"] = False
     # JoySticks field name — not the UI letter "B".
     allowed.setdefault("reward_button", "right_second_button_pressed")
-    allowed.setdefault("reward_gesture", config.reward_gesture)
+    # The RL-100 collection YAML is the single source of truth for labels;
+    # do not let the generic HIL env YAML silently override it.
+    allowed["reward_gesture"] = config.reward_gesture
     allowed.setdefault("reward_stick_threshold", config.reward_stick_threshold)
     allowed.setdefault("reward_stick_rearm_threshold", config.reward_stick_rearm_threshold)
     allowed.setdefault("reward_stick_debounce_s", config.reward_stick_debounce_s)
     teleop = RosTeleopAdapter(RosTeleopConfig(**allowed))
     teleop.start()
 
-    env = make_kuavo_hilserl_env(
-        env_cfg,
-        kuavo_gym_env=kuavo_gym,
-        use_stub_robometer=True,
-        teleop=teleop,
-    )
-    runner = ActExecuteFirstRunner(
-        HoldStatePolicy(),
-        ActRunnerConfig(chunk_size=1, execute_steps=1, fps=int(config.fps)),
-    )
-    _quiet_robot_logs()
+    if not raw_mode:
+        env = make_kuavo_hilserl_env(
+            env_cfg,
+            kuavo_gym_env=kuavo_gym,
+            use_stub_robometer=True,
+            teleop=teleop,
+        )
+        runner = ActExecuteFirstRunner(
+            HoldStatePolicy(),
+            ActRunnerConfig(chunk_size=1, execute_steps=1, fps=int(config.fps)),
+        )
+        _quiet_robot_logs()
 
     pc_hub: DepthPointCloudHub | None = None
     raw_recorder: RawRosbagRecorder | None = None
@@ -368,37 +375,41 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         if not pf.get("ok"):
             pc_hub.close()
             teleop.close()
+            assert env is not None
             env.close()
             raise RuntimeError(f"depth/tf preflight failed: {pf}")
 
-    state_hub = TopicStateHub(
-        sensors_topic=config.sensors_topic,
-        dexhand_state_topic=config.dexhand_state_topic,
-    )
-    state_hub.start()
-    state_pf = state_hub.preflight(timeout_s=8.0)
-    _say(f"raw state preflight: {state_pf}")
-    if not state_pf.get("ok"):
-        state_hub.close()
-        if pc_hub is not None:
-            pc_hub.close()
-        teleop.close()
-        env.close()
-        raise RuntimeError(f"raw state preflight failed: {state_pf}")
-
-    # /kuavo_arm_traj and /control_robot_hand_position are demand-driven:
-    # they only publish while the operator is actively teleoping. A hard
-    # preflight would block collection before any motion occurs. Treat as
-    # a soft warning; the per-step any-command gate still discards episodes
-    # that never receive a command stream.
-    command_pf = teleop.command_stream_status()
-    _say(f"command-stream preflight: {command_pf}")
-    if not command_pf["ok"]:
-        _say(
-            "WARN: arm/hand command stream not yet publishing "
-            "(demand-driven topics). Start teleop during RECORD; "
-            "episodes without commands will be discarded."
+    state_hub: TopicStateHub | None = None
+    if not raw_mode:
+        state_hub = TopicStateHub(
+            sensors_topic=config.sensors_topic,
+            dexhand_state_topic=config.dexhand_state_topic,
         )
+        state_hub.start()
+        state_pf = state_hub.preflight(timeout_s=8.0)
+        _say(f"raw state preflight: {state_pf}")
+        if not state_pf.get("ok"):
+            state_hub.close()
+            if pc_hub is not None:
+                pc_hub.close()
+            teleop.close()
+            assert env is not None
+            env.close()
+            raise RuntimeError(f"raw state preflight failed: {state_pf}")
+
+    # The online fallback uses demand-driven command topics.  Raw rosbag mode
+    # does not need this preflight because the bag records the topics directly.
+    if not raw_mode:
+        command_pf = teleop.command_stream_status()
+        _say(f"command-stream preflight: {command_pf}")
+        if not command_pf["ok"]:
+            _say(
+                "WARN: arm/hand command stream not yet publishing "
+                "(demand-driven topics). Start teleop during RECORD; "
+                "episodes without commands will be discarded."
+            )
+    else:
+        _say("raw rosbag mode: no online state, camera, TF, or freshness gates")
 
     cal = load_stick_calibration()
     mod = ModifierStickDetector(stick=StickEdgeDetector(calibration=cal))
@@ -433,7 +444,10 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         _say(f"A click → start  |  A double → rerecord  |  A long (≥{lp}) → end session")
     else:
         _say(f"Y+stick → start  |  Y+stick ← rerecord  |  Y+stick ↓ (≥{lp}) → end")
-    _say(f"B short → SUCCESS  |  B long (≥{lp}) → FAILURE")
+    if str(config.reward_gesture).lower() in {"right_stick_ud", "right_stick", "stick_ud"}:
+        _say("右摇杆下 → SUCCESS  |  右摇杆上 → FAILURE")
+    else:
+        _say(f"B short → SUCCESS  |  B long (≥{lp}) → FAILURE")
     _say("only_success build drops failures; abort/rerecord never staged")
     _rule()
 
@@ -453,15 +467,17 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
             )
             _say(f"         Y click → start   |   Y long (≥{lp}) → end session")
             _rule()
-            # Reset once per idle phase (HIL idle_reset); do NOT reset every tick.
-            obs, _ = env.reset()
-            teleop.set_reference_action(obs["observation.state"])
+            # Raw bags only need the joystick edge in RESET.  Do not run the
+            # deployment Gym loop here: its freshness gate is irrelevant to
+            # asynchronous recording.
+            if not raw_mode:
+                assert env is not None
+                obs, _ = env.reset()
+                teleop.set_reference_action(obs["observation.state"])
             teleop.reset()
             teleop.set_label_gestures_enabled(False)
             end_session = False
             while not rospy.is_shutdown():
-                # Do NOT call teleop.poll() here: env.step() already polls once.
-                # Double-polling eats B short-press edges (success is one-shot).
                 ev = event_src.poll() if event_src is not None else None
                 et = getattr(ev, "event_type", None) if ev is not None else None
                 if et == "right_stick_right":
@@ -469,13 +485,14 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
                 if et in {"right_stick_down", "collection_complete"}:
                     end_session = True
                     break
-                # Env applies Quest grip intervention internally from its own poll.
-                obs, _, term, trunc, _info = env.step(obs["observation.state"])
-                teleop.set_reference_action(obs["observation.state"])
-                if term or trunc:
-                    obs, _ = env.reset()
+                if not raw_mode:
+                    assert env is not None
+                    obs, _, term, trunc, _info = env.step(obs["observation.state"])
                     teleop.set_reference_action(obs["observation.state"])
-                    teleop.reset()
+                    if term or trunc:
+                        obs, _ = env.reset()
+                        teleop.set_reference_action(obs["observation.state"])
+                        teleop.reset()
                 time.sleep(1.0 / max(config.fps, 1.0))
 
             if end_session or rospy.is_shutdown():
@@ -486,17 +503,15 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
             if raw_mode:
                 assert raw_recorder is not None
                 ep = _record_one_raw_episode(
-                    env=env,
-                    runner=runner,
                     teleop=teleop,
                     event_src=event_src,
                     recorder=raw_recorder,
-                    state_hub=state_hub,
                     config=config,
                     attempt=attempt,
                 )
             else:
                 assert pc_hub is not None
+                assert env is not None and runner is not None and state_hub is not None
                 ep = _record_one_episode(
                     env=env,
                     runner=runner,
@@ -546,11 +561,13 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     finally:
         if event_src is not None:
             event_src.close()
-        state_hub.close()
+        if state_hub is not None:
+            state_hub.close()
         if pc_hub is not None:
             pc_hub.close()
         teleop.close()
-        env.close()
+        if env is not None:
+            env.close()
 
     _rule()
     _say(
@@ -609,12 +626,9 @@ def _action_from_step_info(info: dict | None) -> np.ndarray | None:
 
 def _record_one_raw_episode(
     *,
-    env,
-    runner,
     teleop,
     event_src,
     recorder: RawRosbagRecorder,
-    state_hub: TopicStateHub,
     config: RL100CollectConfig,
     attempt: int = 1,
 ) -> LiveEpisodeResult:
@@ -625,80 +639,58 @@ def _record_one_raw_episode(
     stop_reason = "unknown"
     steps = 0
     handle = None
-    began_topic_episode = False
 
     try:
         handle = recorder.start(eid)
         _say(f"{tag}  id={eid}  raw bag={handle.bag_path}")
-        obs, _ = env.reset()
-        teleop.set_reference_action(obs["observation.state"])
         teleop.reset()
         teleop.set_label_gestures_enabled(True)
-        initial = state_hub.snapshot(
-            config.joint_state_max_age_s,
-            config.dexhand_state_max_age_s,
-            config.state_max_skew_s,
-        )
-        default_hand = np.asarray(config.hand_default, dtype=np.float32)
-        default_error = float(np.max(np.abs(initial.dexhand_position12 - default_hand)))
-        if default_error > float(config.hand_default_tolerance):
-            stop_reason = "hand_default_mismatch"
-            _say(
-                f"{tag}  hand is not at configured default: max error={default_error:.3f} "
-                f"> tolerance={config.hand_default_tolerance:.3f}; restore hand and retry"
-            )
-        else:
-            teleop.begin_topic_native_episode(initial.raw_joint_q20[RL100_ARM_SLICE_RAW20])
-            began_topic_episode = True
-            dt = 1.0 / max(config.fps, 1.0)
-            next_tick = time.monotonic()
-            t0 = next_tick
-            while True:
-                if steps >= max(int(config.live_max_steps), 1):
-                    stop_reason = "max_steps"
-                    break
-                if time.monotonic() - t0 >= float(config.live_max_duration_s):
-                    stop_reason = "max_duration"
-                    break
+        dt = 1.0 / max(config.fps, 1.0)
+        next_tick = time.monotonic()
+        t0 = next_tick
+        while True:
+            if steps >= max(int(config.live_max_steps), 1):
+                stop_reason = "max_steps"
+                break
+            if time.monotonic() - t0 >= float(config.live_max_duration_s):
+                stop_reason = "max_duration"
+                break
 
-                ev = event_src.poll() if event_src is not None else None
-                event_type = getattr(ev, "event_type", None) if ev is not None else None
-                if event_type == "right_stick_left":
-                    result_type, stop_reason = "abort", "rerecord"
-                    _say(f"{tag}  Y double-click → rerecord (discard)")
-                    break
-                if event_type == "right_stick_right":
-                    _say(f"{tag}  Y click ignored — end with B (short=success, long=failure)")
-                elif event_type in {"right_stick_down", "collection_complete"}:
-                    _say(f"{tag}  Y long ignored — end with B first, then Y long in RESET")
+            ev = event_src.poll() if event_src is not None else None
+            event_type = getattr(ev, "event_type", None) if ev is not None else None
+            if event_type == "right_stick_left":
+                result_type, stop_reason = "abort", "rerecord"
+                _say(f"{tag}  Y double-click → rerecord (discard)")
+                break
+            if event_type == "right_stick_right":
+                _say(f"{tag}  Y click ignored — end with B (short=success, long=failure)")
+            elif event_type in {"right_stick_down", "collection_complete"}:
+                _say(f"{tag}  Y long ignored — end with B first, then Y long in RESET")
 
-                hold = np.asarray(runner.select_action(obs).action, dtype=np.float32)
-                obs, _, term, trunc, info = env.step(hold)
-                teleop.set_reference_action(obs["observation.state"])
-                steps += 1
-                labeled = _label_from_teleop_info(info)
-                if labeled is not None:
-                    result_type, stop_reason = labeled
-                    _say(f"{tag}  B → {result_type} — ending episode")
-                    break
-                if term or trunc:
-                    result_type = "abort"
-                    stop_reason = str(info.get("fault_code", "env_terminate"))
-                    break
+            teleop_event = teleop.poll()
+            steps += 1
+            if teleop_event.success:
+                result_type, stop_reason = "success", "success_button"
+                _say(f"{tag}  B → success — ending episode")
+                break
+            if teleop_event.failure:
+                result_type, stop_reason = "failure", "failure_button"
+                _say(f"{tag}  B → failure — ending episode")
+                break
+            if teleop_event.abort or teleop_event.stop:
+                result_type, stop_reason = "abort", "abort_button" if teleop_event.abort else "estop"
+                break
 
-                next_tick += dt
-                now = time.monotonic()
-                if next_tick > now:
-                    time.sleep(next_tick - now)
-                else:
-                    next_tick = now
+            next_tick += dt
+            now = time.monotonic()
+            if next_tick > now:
+                time.sleep(next_tick - now)
+            else:
+                next_tick = now
     except Exception as exc:  # noqa: BLE001
         result_type = "abort"
         stop_reason = "raw_record_error"
         _say(f"{tag}  raw record failed: {exc}")
-    finally:
-        if began_topic_episode:
-            teleop.end_topic_native_episode()
 
     if handle is None:
         return LiveEpisodeResult("discarded", eid, steps, result_type, None, stop_reason)

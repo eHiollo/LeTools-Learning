@@ -206,7 +206,7 @@ python scripts/rl/verify_joint_map.py --live
   - **只等 joint_q + gripper**（RGB 不进 zarr，避免腕相机 RGB 掉线卡住）
   - 点云来自深度 hub，不是 gym RGB
 - `env_config`: `configs/rl/kuavo_hilserl_real_mvp.yaml`
-- Episode 结束靠 B（短按=success，长按≥0.8s=failure）；`live_max_steps` / `live_max_duration_s` 仅安全上限
+- 当前 upper-cams 配置用右摇杆下/上结束 episode（下=success，上=failure）；若 `reward_gesture: button` 才使用 B 短按/长按。`live_max_steps` / `live_max_duration_s` 仅安全上限
 - **不要**在 RECORD 中双击 Y（那是 rerecord/丢弃）；Y 单击在 RECORD 中会被忽略
 - 三相机深度缺一或 workspace 裁空点云会 **硬失败**
 - 末端类型必须为 `qiangnao`；观测话题为 `/dexhand/state`，不是 `/leju_claw_state`

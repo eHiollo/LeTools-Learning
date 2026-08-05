@@ -1,6 +1,6 @@
 # RL-100 原始 rosbag 采集
 
-RL-100 实机采集默认使用 Brain 风格链路：录制时只让 `rosbag record` 异步写入原始消息；episode 结束后再按参考相机时间戳对齐到 YAML 中的 `fps: 10`，最后离线生成点云和 topic-native NPZ/Zarr。采集期间不会在线执行深度解码、TF 查询或 FPS 点云采样。
+RL-100 实机采集默认使用 Brain 风格链路：录制时只让 `rosbag record` 异步写入原始消息；episode 结束后再按参考相机时间戳对齐到 YAML 中的 `fps: 10`，最后离线生成点云和 topic-native NPZ/Zarr。采集期间不创建 Gym 部署环境，也不会在线执行 freshness、深度解码、TF 查询或 FPS 点云采样。
 
 ## 机器人端采集
 
@@ -18,7 +18,7 @@ data/rl100/grasp_8_4_v2/raw_bags/<episode_id>.bag
 data/rl100/grasp_8_4_v2/raw_bags/<episode_id>.json
 ```
 
-`.json` 保存 success/failure/rerecord 标签；未成功结束的 bag 不会进入训练集。采集期间按原来的手势操作，Y 开始、Y 双击重录、B 短按 success、B 长按 failure。
+`.json` 保存 success/failure/rerecord 标签；未成功结束的 bag 不会进入训练集。当前 upper-cams 配置的手势是：Y 开始、Y 双击重录、右摇杆下 success、右摇杆上 failure；若把 `reward_gesture` 改成 `button`，则使用 B 短按/长按。
 
 ## 离线转换与构建
 
