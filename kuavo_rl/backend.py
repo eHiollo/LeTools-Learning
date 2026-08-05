@@ -223,13 +223,16 @@ class ROSBackend(RobotBackend):
                     hwc = hwc.astype(np.uint8)
                 hwc = cv2.resize(hwc, (w, h), interpolation=cv2.INTER_AREA)
                 images[key] = np.transpose(hwc, (2, 0, 1))
+        timing_keys = ("state_stamp_s", "hand_stamp_s", "state_age_s", "hand_age_s")
+        extras = {key: obs[key] for key in timing_keys if key in obs}
         return BackendObservation(
             state=np.asarray(obs["observation.state"], dtype=np.float32),
             images=images,
-            timestamp_s=time.time(),
+            timestamp_s=float(obs.get("state_stamp_s", time.time())),
             observation_age_s=float(obs.get("observation_age_s", 0.0)),
             cross_topic_skew_s=float(obs.get("cross_topic_skew_s", 0.0)),
-            raw_joint_dim=int(obs.get("raw_joint_dim", 28)),
+            raw_joint_dim=int(obs.get("raw_joint_dim", 0)),
+            extras=extras,
         )
 
 

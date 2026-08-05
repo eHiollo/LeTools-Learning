@@ -85,6 +85,28 @@ def test_empty_pointcloud_hard_fail():
         )
 
 
+def test_pointcloud_sample_reports_source_timing_without_ros(monkeypatch):
+    from kuavo_rl.rl100_zarr.config import CameraPCConfig, RL100CollectConfig
+    from kuavo_rl.rl100_zarr.ros_depth import DepthPointCloudHub, _CamSample
+
+    cfg = RL100CollectConfig(
+        cameras=[CameraPCConfig("cam", "/d", "/i", frame_id="cam")],
+        require_all_cameras=True,
+        min_workspace_points=1,
+    )
+    hub = DepthPointCloudHub(cfg)
+    now = __import__("time").time()
+    hub._samples["cam"] = _CamSample(
+        depth_m=np.ones((20, 20), np.float32), intrinsics=(20.0, 20.0, 10.0, 10.0),
+        stamp=now - 0.01, received_at=now - 0.01, frame_id="cam",
+    )
+    monkeypatch.setattr(hub, "_lookup_T_base_cam", lambda frame: np.eye(4, dtype=np.float32))
+    sample = hub.get_point_cloud_sample(max_depth_age_s=1.0, max_camera_skew_s=0.1)
+    assert sample.points.shape == (1024, 3)
+    assert sample.valid_points == 1024
+    assert sample.oldest_age_s < 1.0
+
+
 def test_default_config_aligns_real_collect():
     from kuavo_rl.rl100_zarr.config import RL100CollectConfig, load_rl100_collect_config
 

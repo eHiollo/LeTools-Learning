@@ -42,3 +42,17 @@ def test_position_clip_and_delta():
     r2 = gate.check(huge)
     assert r2.ok
     assert np.all(np.abs(r2.action[0:7] - r.action[0:7]) <= cfg.max_delta_rad[0:7] + 1e-5)
+
+
+def test_yaml_parser_keeps_cross_topic_and_deadman_fields():
+    from kuavo_rl.config import build_env_config_from_dict
+
+    cfg = build_env_config_from_dict({"env": {"safety": {
+        "joint_position_low": [-1.0] * 16,
+        "joint_position_high": [1.0] * 16,
+        "max_delta_rad": [0.1] * 16,
+        "max_cross_topic_skew_s": 0.07,
+        "require_deadman_for_teleop": False,
+    }}})
+    assert cfg.safety.max_cross_topic_skew_s == 0.07
+    assert cfg.safety.require_deadman_for_teleop is False

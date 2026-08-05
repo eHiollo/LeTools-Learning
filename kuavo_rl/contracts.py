@@ -78,6 +78,9 @@ class FaultCode(str, Enum):
     EPISODE_TIMEOUT = "EPISODE_TIMEOUT"
     REWARD_MODEL_ERROR = "REWARD_MODEL_ERROR"
     PAUSE_TIMEOUT = "PAUSE_TIMEOUT"
+    INFERENCE_TIMEOUT = "INFERENCE_TIMEOUT"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
 
 
 def split_action(action: np.ndarray) -> tuple[np.ndarray, float, np.ndarray, float]:

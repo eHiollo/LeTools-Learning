@@ -262,5 +262,27 @@ LD_PRELOAD="$GOMP" python -c "import torch, cv_bridge; print(torch.__version__)"
 - Package: `kuavo_rl/rl100_zarr/`
 - CLI: `scripts/rl/collect_rl100_zarr.py` / `scripts/rl/run_rl100_zarr_collect.sh`
 - Configs: `rl100_zarr_collect.yaml` / `rl100_zarr_collect_upper_cams.yaml`
+
+## RL-100 真机部署
+
+部署实现位于 `kuavo_rl/rl100_policy.py` 与 `kuavo_rl/rl100_real_runner.py`，详细设计见
+[`docs/RL100_REAL_ROBOT_DEPLOYMENT_PLAN.md`](../../docs/RL100_REAL_ROBOT_DEPLOYMENT_PLAN.md)。
+默认配置 `configs/rl/rl100_real_deploy.yaml` 是 shadow 模式；现场批准的 14 维关节限位和
+16 维起始姿态未填写时，`live` 会拒绝启动。
+
+```bash
+bash scripts/rl/run_rl100_real.sh inspect-checkpoint \
+  --config configs/rl/rl100_real_deploy.yaml
+
+bash scripts/rl/run_rl100_real.sh ros-preflight \
+  --config configs/rl/rl100_real_deploy.yaml --duration-s 60
+
+bash scripts/rl/run_rl100_real.sh shadow \
+  --config configs/rl/rl100_real_deploy.yaml --max-steps 500
+```
+
+只有完成部署方案中的逐级验收后，才可运行 `live`；它还要求 `--confirm-live`、
+`--physical-estop-ready` 和一次性 `--live-token`。不要用旧的
+`third_party/RL-100/data/grasp_8_4.zarr` 做训练或回放。
 - Launch: `configs/launch/hil_upper_cams.launch`
 - Does not modify HIL topic profiles; `data/` is gitignored
