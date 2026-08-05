@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from kuavo_rl.rl100_zarr.config import RL100CollectConfig
-from kuavo_rl.rl100_zarr.ros_depth import DepthPointCloudHub
+from kuavo_rl.rl100_zarr.ros_depth import CameraSyncError, DepthPointCloudHub
 from kuavo_rl.rl100_zarr.ros_state import TopicStateHub
 from kuavo_rl.rl100_zarr.staging import save_episode_npz
 from kuavo_rl.contracts import RL100_ACTION_DIM, RL100_ARM_SLICE_RAW20, RL100_STATE_DIM
@@ -118,11 +119,12 @@ def episode_action_quality_errors(
     return errors
 
 
-def _summary_stats(values: np.ndarray) -> dict[str, float | None]:
+def _summary_stats(values: np.ndarray) -> dict[str, float | int | None]:
     arr = np.asarray(values, dtype=np.float64).reshape(-1)
     if arr.size == 0:
-        return {"p50": None, "p95": None, "p99": None, "max": None}
+        return {"count": 0, "p50": None, "p95": None, "p99": None, "max": None}
     return {
+        "count": int(arr.size),
         "p50": float(np.quantile(arr, 0.50)),
         "p95": float(np.quantile(arr, 0.95)),
         "p99": float(np.quantile(arr, 0.99)),
@@ -195,6 +197,23 @@ def episode_action_quality_report(
         else:
             report["command_hold_duration_s"] = _summary_stats(np.asarray([], dtype=np.float64))
             report["causality_violation_count"] = None
+        report["camera_sync"] = {
+            "header_skew_s": _summary_stats(
+                np.asarray(audit.get("point_cloud_header_skew", []), dtype=np.float64)
+            ),
+            "receive_skew_s": _summary_stats(
+                np.asarray(audit.get("point_cloud_receive_skew", []), dtype=np.float64)
+            ),
+            "received_age_s": {
+                name: _summary_stats(
+                    np.asarray(audit.get(f"{name}_depth_age", []), dtype=np.float64)
+                )
+                for name in ("head", "left", "right")
+            },
+            "valid_points": _summary_stats(
+                np.asarray(audit.get("point_cloud_valid_points", []), dtype=np.float64)
+            ),
+        }
     return report
 
 
@@ -599,6 +618,19 @@ def _record_one_episode(
         "point_cloud_received_at": [],
         "point_cloud_age": [],
         "point_cloud_camera_skew": [],
+        "point_cloud_header_skew": [],
+        "point_cloud_receive_skew": [],
+        "point_cloud_reference_stamp": [],
+        "point_cloud_reference_camera": [],
+        "head_depth_stamp": [],
+        "left_depth_stamp": [],
+        "right_depth_stamp": [],
+        "head_depth_received_at": [],
+        "left_depth_received_at": [],
+        "right_depth_received_at": [],
+        "head_depth_age": [],
+        "left_depth_age": [],
+        "right_depth_age": [],
         "point_cloud_valid_points": [],
         "arm_command_changed": [],
         "hand_command_changed": [],
@@ -646,6 +678,11 @@ def _record_one_episode(
     max_steps = max(int(config.live_max_steps), 1)
     max_duration_s = float(config.live_max_duration_s)
     source_failures = 0
+    camera_sync_failures = 0
+    camera_sync_attempts = 0
+    camera_sync_successes = 0
+    camera_sync_failure_codes: Counter[str] = Counter()
+    invalid_counts_before = Counter(pc_hub.invalid_counts)
 
     try:
         while True:
@@ -684,21 +721,43 @@ def _record_one_episode(
                         config.joint_state_max_age_s,
                         config.dexhand_state_max_age_s,
                         config.state_max_skew_s,
+                        cutoff_monotonic_s=cutoff,
                     )
+                    camera_sync_attempts += 1
                     cloud_sample = pc_hub.get_point_cloud_sample(
-                        max_depth_age_s=config.depth_max_age_s,
-                        max_camera_skew_s=config.camera_max_skew_s,
+                        cutoff_monotonic_s=cutoff,
+                        max_received_age_s=min(
+                            config.depth_max_age_s,
+                            config.camera_max_received_age_s,
+                        ),
+                        max_header_skew_s=config.camera_max_header_skew_s,
+                        max_receive_skew_s=config.camera_max_receive_skew_s,
                     )
+                    camera_sync_successes += 1
                     source_failures = 0
+                    camera_sync_failures = 0
                 except Exception as exc:  # noqa: BLE001
-                    source_failures += 1
-                    if source_failures >= config.max_consecutive_source_failures:
-                        _say(f"{tag}  source failed {source_failures} times: {exc}")
-                        result_type, stop_reason = "abort", "source_error"
+                    is_camera_sync = isinstance(exc, CameraSyncError)
+                    if is_camera_sync:
+                        camera_sync_failure_codes[exc.code] += 1
+                        camera_sync_failures += 1
+                        failure_count = camera_sync_failures
+                        failure_limit = config.camera_max_consecutive_sync_failures
+                        failure_label = "camera sync"
+                    else:
+                        source_failures += 1
+                        failure_count = source_failures
+                        failure_limit = config.max_consecutive_source_failures
+                        failure_label = "source"
+                    if failure_count >= failure_limit:
+                        _say(f"{tag}  {failure_label} failed {failure_count} times: {exc}")
+                        result_type, stop_reason = "abort", (
+                            "camera_sync_error" if is_camera_sync else "source_error"
+                        )
                         break
                     _say(
-                        f"{tag}  source frame skipped ({source_failures}/"
-                        f"{config.max_consecutive_source_failures}): {exc}"
+                        f"{tag}  {failure_label} frame skipped ({failure_count}/"
+                        f"{failure_limit}): {exc}"
                     )
                     # Still run one env step so B/Y labels remain responsive;
                     # no state/action sample is appended for this stale frame.
@@ -734,6 +793,21 @@ def _record_one_episode(
                 audit["point_cloud_received_at"].append(cloud_sample.received_at_s)
                 audit["point_cloud_age"].append(cloud_sample.oldest_age_s)
                 audit["point_cloud_camera_skew"].append(cloud_sample.max_camera_skew_s)
+                audit["point_cloud_header_skew"].append(cloud_sample.max_header_skew_s)
+                audit["point_cloud_receive_skew"].append(cloud_sample.max_receive_skew_s)
+                audit["point_cloud_reference_stamp"].append(cloud_sample.reference_stamp_s)
+                audit["point_cloud_reference_camera"].append(cloud_sample.reference_camera)
+                camera_stamps = cloud_sample.camera_stamps
+                camera_received = cloud_sample.camera_received_wall_s or {}
+                camera_ages = cloud_sample.camera_received_ages_s or {}
+                for camera_name, key in (
+                    ("head_cam_h", "head"),
+                    ("wrist_cam_l", "left"),
+                    ("wrist_cam_r", "right"),
+                ):
+                    audit[f"{key}_depth_stamp"].append(camera_stamps.get(camera_name, 0.0))
+                    audit[f"{key}_depth_received_at"].append(camera_received.get(camera_name, 0.0))
+                    audit[f"{key}_depth_age"].append(camera_ages.get(camera_name, float("inf")))
                 audit["point_cloud_valid_points"].append(cloud_sample.valid_points)
                 audit["arm_command_changed"].append(command.arm_changed)
                 audit["hand_command_changed"].append(command.hand_changed)
@@ -801,6 +875,37 @@ def _record_one_episode(
             "action_dim": config.action_dim,
             "state_order": "raw_joint_q20 + dexhand_position12",
             "action_order": "arm14_deg + left_hand6_raw + right_hand6_raw",
+            "camera_sync": {
+                "label": (
+                    "UNSYNCHRONIZED_LEGACY"
+                    if config.camera_sync_mode == "latest_legacy"
+                    else "BUFFERED_HEADER"
+                ),
+                "mode": config.camera_sync_mode,
+                "reference_camera": config.camera_reference_camera,
+                "buffer_size": config.camera_buffer_size,
+                "max_header_skew_s": config.camera_max_header_skew_s,
+                "max_receive_skew_s": config.camera_max_receive_skew_s,
+                "max_received_age_s": min(
+                    config.depth_max_age_s,
+                    config.camera_max_received_age_s,
+                ),
+                "tf_at_image_stamp": config.camera_tf_at_image_stamp,
+                "tf_timeout_s": config.camera_tf_timeout_s,
+                "sync_attempts": camera_sync_attempts,
+                "sync_successes": camera_sync_successes,
+                "sync_success_rate": (
+                    camera_sync_successes / camera_sync_attempts
+                    if camera_sync_attempts
+                    else 0.0
+                ),
+                "failure_codes": dict(camera_sync_failure_codes),
+                "invalid_counts": {
+                    key: int(value - invalid_counts_before.get(key, 0))
+                    for key, value in pc_hub.invalid_counts.items()
+                    if value > invalid_counts_before.get(key, 0)
+                },
+            },
         },
         audit=audit_arrays,
     )

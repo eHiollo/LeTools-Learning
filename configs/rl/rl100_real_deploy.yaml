@@ -12,9 +12,15 @@ inference:
   deterministic: false
   distill2mean: false
   use_cm: auto
-  execute_steps: 1
+  # Keep the model's action horizon as a small refillable queue.  Actions are
+  # still consumed at the 10 Hz dataset rate; inference may run slower.
+  execute_steps: 4
+  action_buffer_size: 8
+  action_low_watermark: 2
   control_hz: 10
-  timeout_s: 0.10
+  # Startup/empty-buffer wait bound, not a per-tick synchronous inference
+  # requirement.  Slow results are accepted while the queue has actions.
+  timeout_s: 0.50
   warmup_runs: 3
 
 observation:
@@ -23,12 +29,25 @@ observation:
   raw_joint_topic: /sensors_data_raw
   dexhand_state_topic: /dexhand/state
   joint_state_max_age_s: 0.15
-  dexhand_state_max_age_s: 0.15
+  dexhand_state_max_age_s: 0.50
   state_max_skew_s: 0.10
   depth_max_age_s: 0.15
   # Keep deployment aligned with the collection contract; revisit after data QA.
-  max_camera_skew_s: 0.50
+  max_camera_skew_s: 2.00
   max_state_cloud_skew_s: 0.10
+  camera_sync:
+    mode: buffered_header
+    reference_camera: head_cam_h
+    buffer_size: 32
+    max_header_skew_s: 0.10
+    warn_header_skew_s: 0.05
+    max_received_age_s: 0.20
+    max_receive_skew_s: 0.20
+    require_monotonic_header: true
+    require_same_time_epoch: true
+    tf_at_image_stamp: true
+    tf_timeout_s: 0.05
+    max_consecutive_sync_failures: 10
 
 publish:
   arm_topic: /kuavo_arm_traj

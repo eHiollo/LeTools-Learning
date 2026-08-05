@@ -150,7 +150,7 @@ class _FakeStateHub:
             hand_received_at_s=now,
         )
 
-    def snapshot(self, *_args):
+    def snapshot(self, *_args, **_kwargs):
         return self.sample
 
 
@@ -203,7 +203,7 @@ def _topic_runner(shadow: bool):
     runner = RL100TopicRealRunner(
         policy=_FakePolicy(),
         state_hub=state_hub,
-        point_cloud_source=lambda: cloud,
+        point_cloud_source=lambda cutoff_monotonic_s=None: cloud,
         publisher=publisher,
         safety=safety,
         limits=RL100TopicRunnerLimits(

@@ -25,6 +25,8 @@ from kuavo_rl.contracts import (
 )
 from kuavo_rl.ros_adapter import build_published_command
 from kuavo_rl.safety import SafetyGate
+from kuavo_rl.rl100_zarr.ros_depth import PointCloudSample
+from kuavo_rl.rl100_topic_executor import RL100TopicActionScheduler
 
 
 class DeployState(str, Enum):
@@ -37,17 +39,6 @@ class DeployState(str, Enum):
     HOLD = "HOLD"
     FAULT = "FAULT"
     STOPPED = "STOPPED"
-
-
-@dataclass(frozen=True)
-class PointCloudSample:
-    points: np.ndarray
-    fused_stamp_s: float
-    received_at_s: float
-    oldest_age_s: float
-    max_camera_skew_s: float
-    camera_stamps: dict[str, float]
-    valid_points: int
 
 
 @dataclass(frozen=True)
@@ -662,11 +653,16 @@ class RL100TopicCommandPublisher:
 
 @dataclass(frozen=True)
 class RL100TopicRunnerLimits:
+    control_hz: float = 10.0
+    execute_steps: int = 1
+    action_buffer_size: int = 8
+    action_low_watermark: int = 2
     joint_state_max_age_s: float = 0.15
     dexhand_state_max_age_s: float = 0.15
     state_max_skew_s: float = 0.10
     depth_max_age_s: float = 0.15
     max_camera_skew_s: float = 0.10
+    max_camera_receive_skew_s: float = 0.20
     max_state_cloud_skew_s: float = 0.10
     inference_timeout_s: float = 0.10
     max_consecutive_source_failures: int = 1
@@ -720,14 +716,19 @@ class RL100TopicObservationHistory:
 
 
 class RL100TopicRealRunner:
-    """Synchronous 32/26 RL-100 runner using direct ROS command topics."""
+    """Buffered 32/26 RL-100 runner using direct ROS command topics.
+
+    Actions are consumed at the training/control rate while the next action
+    chunk is inferred in the background.  The ROS controller remains
+    responsible for its native high-rate trajectory tracking.
+    """
 
     def __init__(
         self,
         *,
         policy: PolicyLike,
         state_hub: Any,
-        point_cloud_source: Callable[[], PointCloudSample],
+        point_cloud_source: Callable[..., PointCloudSample],
         publisher: RL100TopicCommandPublisher,
         safety: RL100TopicSafetyGate,
         limits: RL100TopicRunnerLimits = RL100TopicRunnerLimits(),
@@ -748,6 +749,15 @@ class RL100TopicRealRunner:
         self.state = DeployState.INIT
         self._source_failures = 0
         self._fault_hold_sent = False
+        self._buffer_empty_ticks = 0
+        self._action_scheduler = RL100TopicActionScheduler(
+            policy=policy,
+            action_hz=limits.control_hz,
+            execute_steps=limits.execute_steps,
+            buffer_size=limits.action_buffer_size,
+            low_watermark=limits.action_low_watermark,
+            inference_timeout_s=limits.inference_timeout_s,
+        )
 
     def preflight(self) -> None:
         self.state = DeployState.PREFLIGHT
@@ -763,8 +773,22 @@ class RL100TopicRealRunner:
         if int(info.point_count) != 1024 or int(info.point_dim) != 3:
             self._fault(FaultCode.ACTION_SHAPE, "checkpoint point cloud shape is not 1024x3")
             raise RuntimeError("RL-100 topic-native point cloud mismatch")
+        checkpoint_steps = int(getattr(info, "n_action_steps", self.limits.execute_steps))
+        if checkpoint_steps < self.limits.execute_steps:
+            self._fault(
+                FaultCode.CONFIGURATION_ERROR,
+                f"execute_steps={self.limits.execute_steps} exceeds checkpoint n_action_steps={checkpoint_steps}",
+            )
+            raise RuntimeError("RL-100 execute_steps exceeds checkpoint action horizon")
         self.safety.reset()
+        self._action_scheduler.reset()
+        self._buffer_empty_ticks = 0
+        self._fault_hold_sent = False
         self.state = DeployState.READY
+
+    def close(self) -> None:
+        """Stop the background inference worker."""
+        self._action_scheduler.close()
 
     def arm_live(self) -> None:
         if self.shadow_mode:
@@ -788,6 +812,8 @@ class RL100TopicRealRunner:
         if paused:
             self.state = DeployState.HOLD
             self.history.clear()
+            self._action_scheduler.reset()
+            self._buffer_empty_ticks = 0
             return self._result(FaultCode.NONE, "paused", record)
         if self.state == DeployState.HOLD:
             self.state = DeployState.READY
@@ -802,62 +828,110 @@ class RL100TopicRealRunner:
         state_sample = None
         phase = "source"
         try:
-            state_sample = self.state_hub.snapshot(
-                self.limits.joint_state_max_age_s,
-                self.limits.dexhand_state_max_age_s,
-                self.limits.state_max_skew_s,
-            )
-            cloud = self.point_cloud_source()
+            cutoff_monotonic_s = time.monotonic()
+            try:
+                state_sample = self.state_hub.snapshot(
+                    self.limits.joint_state_max_age_s,
+                    self.limits.dexhand_state_max_age_s,
+                    self.limits.state_max_skew_s,
+                    cutoff_monotonic_s=cutoff_monotonic_s,
+                )
+            except TypeError as exc:
+                # Preserve injected/legacy state hubs that do not expose the
+                # optional causal cutoff parameter.
+                if "cutoff_monotonic_s" not in str(exc):
+                    raise
+                state_sample = self.state_hub.snapshot(
+                    self.limits.joint_state_max_age_s,
+                    self.limits.dexhand_state_max_age_s,
+                    self.limits.state_max_skew_s,
+                )
+            try:
+                cloud = self.point_cloud_source(cutoff_monotonic_s=cutoff_monotonic_s)
+            except TypeError as exc:
+                # Preserve injected/legacy no-argument point-cloud sources.
+                if "cutoff_monotonic_s" not in str(exc):
+                    raise
+                cloud = self.point_cloud_source()
             if cloud.points.shape != (1024, 3) or not np.isfinite(cloud.points).all():
                 raise ValueError(f"point cloud shape/finite check failed: {cloud.points.shape}")
             if cloud.oldest_age_s > self.limits.depth_max_age_s:
                 raise RuntimeError(f"point cloud stale: {cloud.oldest_age_s:.3f}s")
             if cloud.max_camera_skew_s > self.limits.max_camera_skew_s:
                 raise RuntimeError(f"camera skew: {cloud.max_camera_skew_s:.3f}s")
+            if cloud.max_receive_skew_s > self.limits.max_camera_receive_skew_s:
+                raise RuntimeError(
+                    f"camera receive skew: {cloud.max_receive_skew_s:.3f}s"
+                )
             if abs(state_sample.joint_stamp_s - cloud.fused_stamp_s) > self.limits.max_state_cloud_skew_s:
                 raise RuntimeError("state/point-cloud timestamp skew too large")
             self._source_failures = 0
             self.history.append(cloud.points, state_sample.state32)
             points, states = self.history.arrays()
             phase = "inference"
-            infer_started = time.monotonic()
-            chunk = np.asarray(self.policy.predict(points, states), dtype=np.float32)
-            inference_s = time.monotonic() - infer_started
-            if inference_s > self.limits.inference_timeout_s:
-                return self._fault_result(
-                    FaultCode.INFERENCE_TIMEOUT,
-                    f"inference {inference_s:.3f}s",
-                    record,
-                    state_sample=state_sample,
-                )
-            if chunk.ndim != 2 or chunk.shape[1] != RL100_ACTION_DIM or chunk.shape[0] < 1:
-                return self._fault_result(
-                    FaultCode.ACTION_SHAPE,
-                    f"policy chunk shape {chunk.shape}",
-                    record,
-                    state_sample=state_sample,
-                )
-            if not np.isfinite(chunk).all():
-                return self._fault_result(
-                    FaultCode.ACTION_NAN,
-                    "policy chunk has NaN/Inf",
-                    record,
-                    state_sample=state_sample,
-                )
-            raw_action = chunk[0]
+            scheduled = self._action_scheduler.step(points, states)
+            scheduler_state = scheduled.state
+            record.update(
+                {
+                    "action_buffer_pending": scheduler_state.pending,
+                    "inference_running": scheduler_state.inference_running,
+                    "inference_ready": scheduler_state.inference_ready,
+                    "inference_s": scheduler_state.inference_s,
+                    "stale_action_steps_dropped": scheduler_state.stale_steps_dropped,
+                    "inference_error": scheduler_state.last_error,
+                    "predicted_chunk": (
+                        scheduler_state.predicted_chunk.tolist()
+                        if scheduler_state.predicted_chunk is not None
+                        else None
+                    ),
+                }
+            )
+            if scheduled.step is None:
+                self._buffer_empty_ticks += 1
+                record["action_buffer_empty_ticks"] = self._buffer_empty_ticks
+                if scheduler_state.last_error and not scheduler_state.inference_running:
+                    return self._fault_result(
+                        FaultCode.ACTION_SHAPE,
+                        scheduler_state.last_error,
+                        record,
+                        state_sample=state_sample,
+                    )
+                if self._buffer_empty_ticks > self._action_scheduler.max_empty_ticks:
+                    return self._fault_result(
+                        FaultCode.INFERENCE_TIMEOUT,
+                        "action buffer exhausted while inference was not ready",
+                        record,
+                        state_sample=state_sample,
+                    )
+                if not self.shadow_mode:
+                    self.publisher.publish(self.safety.hold_command(state_sample.state32))
+                    record["published"] = True
+                record["loop_s"] = time.monotonic() - started
+                self.state = DeployState.SHADOW if self.shadow_mode else DeployState.RUNNING
+                return self._result(FaultCode.NONE, "waiting for action chunk", record)
+
+            self._buffer_empty_ticks = 0
+            raw_action = scheduled.step.action
             safe = self.safety.check(raw_action, state_sample.state32)
             record.update(
                 {
                     "contract": RL100_TOPIC_NATIVE_CONTRACT,
                     "state_stamps": [state_sample.joint_stamp_s, state_sample.hand_stamp_s, cloud.fused_stamp_s],
                     "ages_s": [state_sample.joint_age_s, state_sample.hand_age_s, cloud.oldest_age_s],
-                    "inference_s": inference_s,
+                    "camera_sync": {
+                        "reference_camera": cloud.reference_camera,
+                        "reference_stamp_s": cloud.reference_stamp_s,
+                        "header_skew_s": cloud.max_header_skew_s,
+                        "receive_skew_s": cloud.max_receive_skew_s,
+                        "camera_stamps": cloud.camera_stamps,
+                        "camera_received_ages_s": cloud.camera_received_ages_s or {},
+                    },
+                    "inference_s": scheduled.step.inference_s,
                     "raw_action": raw_action.tolist(),
                     "limited_action": safe.command.limited_action26.tolist(),
                     "arm14_deg": safe.command.arm14_deg.tolist(),
                     "hand12_raw": safe.command.hand12_raw.tolist(),
                     "clip_mask": safe.command.clip_mask26.tolist(),
-                    "predicted_chunk": chunk.tolist(),
                     "history_padded": self.history.padded_on_start,
                     "safety_clipped": safe.clipped,
                     "valid_points": cloud.valid_points,
@@ -892,6 +966,8 @@ class RL100TopicRealRunner:
     ) -> None:
         self.state = DeployState.FAULT
         self.history.clear()
+        self._action_scheduler.reset()
+        self._buffer_empty_ticks = 0
         if (
             state_sample is not None
             and not self.shadow_mode

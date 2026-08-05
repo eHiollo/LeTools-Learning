@@ -1,7 +1,7 @@
 # Parallel RL-100 zarr collection — aligned with real-robot HIL collect.
 #
 # Same deploy/env/teleop wiring as configs/rl/hil_collection_real_v001.yaml.
-# Depth topics match kuavo_deploy obs_buffer compressedDepth.
+# Depth topics match the raw image path used by kuavo_deploy obs_buffer.
 #
 # Output layout:
 #   data/rl100/<task>/episodes/*.npz   # per-episode staging
@@ -37,25 +37,26 @@ workspace:
   z_range: [0.0, 1.4]
 
 # Three cameras fused into one (1024, 3) point cloud — RL-100 schema.
-# Topics = kuavo_deploy CompressedDepth (真机 / 模仿学习常用).
+# Use raw depth so synchronization is based on the camera sampling header,
+# without an extra compressedDepth transport/decode queue.
 cameras:
   - name: head_cam_h
-    depth_topic: /cam_h/depth/image_raw/compressedDepth
+    depth_topic: /cam_h/depth/image_raw
     camera_info_topic: /cam_h/depth/camera_info
     frame_id: cam_h_depth_optical_frame
-    depth_msg_type: compressed_depth
+    depth_msg_type: image
     enabled: true
   - name: wrist_cam_l
-    depth_topic: /cam_l/depth/image_rect_raw/compressedDepth
+    depth_topic: /cam_l/depth/image_rect_raw
     camera_info_topic: /cam_l/depth/camera_info
     frame_id: cam_l_depth_optical_frame
-    depth_msg_type: compressed_depth
+    depth_msg_type: image
     enabled: true
   - name: wrist_cam_r
-    depth_topic: /cam_r/depth/image_rect_raw/compressedDepth
+    depth_topic: /cam_r/depth/image_rect_raw
     camera_info_topic: /cam_r/depth/camera_info
     frame_id: cam_r_depth_optical_frame
-    depth_msg_type: compressed_depth
+    depth_msg_type: image
     enabled: true
 
 require_all_cameras: true
@@ -78,6 +79,20 @@ state_max_skew_s: 0.10
 depth_max_age_s: 0.15
 camera_max_skew_s: 0.10
 max_consecutive_source_failures: 3
+
+camera_sync:
+  mode: buffered_header
+  reference_camera: head_cam_h
+  buffer_size: 32
+  max_header_skew_s: 0.10
+  warn_header_skew_s: 0.05
+  max_received_age_s: 0.20
+  max_receive_skew_s: 0.20
+  require_monotonic_header: true
+  require_same_time_epoch: true
+  tf_at_image_stamp: true
+  tf_timeout_s: 0.05
+  max_consecutive_sync_failures: 10
 require_hand_motion: false
 min_hand_action_range: 5.0
 

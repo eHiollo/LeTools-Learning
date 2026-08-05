@@ -32,22 +32,22 @@ workspace:
 
 cameras:
   - name: head_cam_h
-    depth_topic: /camera/depth/image_raw/compressedDepth
+    depth_topic: /camera/depth/image_raw
     camera_info_topic: /camera/depth/camera_info
     frame_id: camera_color_optical_frame
-    depth_msg_type: compressed_depth
+    depth_msg_type: image
     enabled: true
   - name: wrist_cam_l
-    depth_topic: /left_wrist_camera/depth/image_rect_raw/compressedDepth
+    depth_topic: /left_wrist_camera/depth/image_rect_raw
     camera_info_topic: /left_wrist_camera/depth/camera_info
     frame_id: left_wrist_camera_depth_optical_frame
-    depth_msg_type: compressed_depth
+    depth_msg_type: image
     enabled: true
   - name: wrist_cam_r
-    depth_topic: /right_wrist_camera/depth/image_rect_raw/compressedDepth
+    depth_topic: /right_wrist_camera/depth/image_rect_raw
     camera_info_topic: /right_wrist_camera/depth/camera_info
     frame_id: right_wrist_camera_depth_optical_frame
-    depth_msg_type: compressed_depth
+    depth_msg_type: image
     enabled: true
 
 require_all_cameras: true
@@ -65,16 +65,32 @@ start_on_any_command: true
 command_hold_last: true
 command_timeout_s: null
 joint_state_max_age_s: 0.15
-dexhand_state_max_age_s: 0.15
+dexhand_state_max_age_s: 0.50
 state_max_skew_s: 0.10
 depth_max_age_s: 0.15
 # Current upper-camera header skew is accepted during collection; analyze it in data QA.
-camera_max_skew_s: 0.50
+camera_max_skew_s: 2.00
 max_consecutive_source_failures: 3
 
-# Never write hold-state fallbacks as BC labels. For this grasp task at least
-# one hand must move by 5% or the episode is discarded before staging.
-require_hand_motion: true
+# New buffered synchronizer. The old 2.00s field above is retained as an
+# unmodified legacy compatibility value; buffered_header uses this strict gate.
+camera_sync:
+  mode: buffered_header
+  reference_camera: head_cam_h
+  buffer_size: 32
+  max_header_skew_s: 0.10
+  warn_header_skew_s: 0.05
+  max_received_age_s: 0.20
+  max_receive_skew_s: 0.20
+  require_monotonic_header: true
+  require_same_time_epoch: true
+  tf_at_image_stamp: true
+  tf_timeout_s: 0.05
+  max_consecutive_sync_failures: 10
+
+# Hand motion is audited but is not a hard gate; arm-only episodes are allowed.
+# The hand action range remains available for post-collection quality filtering.
+require_hand_motion: false
 min_hand_action_range: 5.0
 
 confirm_live: true

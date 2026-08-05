@@ -83,6 +83,76 @@ def _policy_from_config(cfg):
     return policy
 
 
+def _validate_camera_sync_contract(deploy_cfg, point_cfg) -> None:
+    """Reject deployment/point-cloud YAML drift before subscribing for control."""
+
+    deploy_obs = deploy_cfg.raw.get("observation", {})
+    deploy_sync = deploy_obs.get("camera_sync", {}) or {}
+    expected = {
+        "label": (
+            "UNSYNCHRONIZED_LEGACY"
+            if str(deploy_sync.get("mode", "buffered_header")) == "latest_legacy"
+            else "BUFFERED_HEADER"
+        ),
+        "mode": str(deploy_sync.get("mode", "buffered_header")),
+        "reference_camera": str(deploy_sync.get("reference_camera", "head_cam_h")),
+        "buffer_size": int(deploy_sync.get("buffer_size", 32)),
+        "max_header_skew_s": float(
+            deploy_sync.get("max_header_skew_s", deploy_obs.get("max_camera_skew_s", 0.10))
+        ),
+        "warn_header_skew_s": float(deploy_sync.get("warn_header_skew_s", 0.05)),
+        "max_received_age_config_s": float(deploy_sync.get("max_received_age_s", 0.20)),
+        "max_receive_skew_s": float(deploy_sync.get("max_receive_skew_s", 0.20)),
+        "require_monotonic_header": bool(deploy_sync.get("require_monotonic_header", True)),
+        "require_same_time_epoch": bool(deploy_sync.get("require_same_time_epoch", True)),
+        "tf_at_image_stamp": bool(deploy_sync.get("tf_at_image_stamp", True)),
+        "tf_timeout_s": float(deploy_sync.get("tf_timeout_s", 0.05)),
+        "max_consecutive_sync_failures": int(
+            deploy_sync.get("max_consecutive_sync_failures", 10)
+        ),
+        "max_received_age_s": float(deploy_obs.get("depth_max_age_s", 0.15)),
+    }
+    actual = {
+        "label": (
+            "UNSYNCHRONIZED_LEGACY"
+            if point_cfg.camera_sync_mode == "latest_legacy"
+            else "BUFFERED_HEADER"
+        ),
+        "mode": point_cfg.camera_sync_mode,
+        "reference_camera": point_cfg.camera_reference_camera,
+        "buffer_size": point_cfg.camera_buffer_size,
+        "max_header_skew_s": point_cfg.camera_max_header_skew_s,
+        "warn_header_skew_s": point_cfg.camera_warn_header_skew_s,
+        "max_received_age_config_s": point_cfg.camera_max_received_age_s,
+        "max_receive_skew_s": point_cfg.camera_max_receive_skew_s,
+        "require_monotonic_header": point_cfg.camera_require_monotonic_header,
+        "require_same_time_epoch": point_cfg.camera_require_same_time_epoch,
+        "tf_at_image_stamp": point_cfg.camera_tf_at_image_stamp,
+        "tf_timeout_s": point_cfg.camera_tf_timeout_s,
+        "max_consecutive_sync_failures": point_cfg.camera_max_consecutive_sync_failures,
+        "max_received_age_s": min(
+            point_cfg.depth_max_age_s,
+            point_cfg.camera_max_received_age_s,
+        ),
+    }
+    mismatches: list[str] = []
+    for key, expected_value in expected.items():
+        actual_value = actual[key]
+        if isinstance(expected_value, float):
+            equal = bool(np.isclose(expected_value, actual_value))
+        else:
+            equal = expected_value == actual_value
+        if not equal:
+            mismatches.append(
+                f"{key}: deploy={expected_value!r}, pointcloud={actual_value!r}"
+            )
+    if mismatches:
+        raise RuntimeError(
+            "deployment and point-cloud camera_sync contracts differ: "
+            + "; ".join(mismatches)
+        )
+
+
 def cmd_inspect_checkpoint(args: argparse.Namespace) -> int:
     from kuavo_rl.rl100_deploy_config import load_rl100_deploy_config
 
@@ -104,6 +174,7 @@ def _make_ros_components(cfg):
     if not rospy.core.is_initialized():
         rospy.init_node("rl100_real_deploy", anonymous=True)
     point_cfg = load_rl100_collect_config(cfg.raw["observation"]["pointcloud_config"])
+    _validate_camera_sync_contract(cfg, point_cfg)
     if point_cfg.num_points != 1024 or point_cfg.state_dim != 32 or point_cfg.action_dim != 26:
         raise RuntimeError("pointcloud collection config must preserve the 1024/32/26 training contract")
     hub = DepthPointCloudHub(point_cfg)
@@ -126,7 +197,7 @@ def _ros_preflight(
 ) -> tuple[dict[str, Any], tuple[Any, Any, Any]]:
     hub, state_hub, publisher = _make_ros_components(cfg)
     limits = cfg.runner_limits()
-    point_report = hub.preflight(timeout_s=timeout_s)
+    point_report = hub.preflight(timeout_s=timeout_s, profile_s=profile_s)
     state_report = state_hub.preflight(timeout_s=min(timeout_s, 5.0), profile_s=profile_s)
     connections = publisher.connection_counts()
     publishers_ok = all(value > 0 for value in connections.values())
@@ -146,8 +217,9 @@ def _ros_preflight(
         }, (hub, state_hub, publisher)
     try:
         cloud = hub.get_point_cloud_sample(
-            max_depth_age_s=limits.depth_max_age_s,
-            max_camera_skew_s=limits.max_camera_skew_s,
+            max_received_age_s=limits.depth_max_age_s,
+            max_header_skew_s=limits.max_camera_skew_s,
+            max_receive_skew_s=limits.max_camera_receive_skew_s,
         )
         state = state_hub.snapshot(
             limits.joint_state_max_age_s,
@@ -162,6 +234,8 @@ def _ros_preflight(
                 "shape": list(cloud.points.shape),
                 "oldest_age_s": cloud.oldest_age_s,
                 "max_camera_skew_s": cloud.max_camera_skew_s,
+                "max_receive_skew_s": cloud.max_receive_skew_s,
+                "reference_camera": cloud.reference_camera,
                 "camera_stamps": cloud.camera_stamps,
             },
             "robot_state": {
@@ -250,6 +324,7 @@ def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
 
     cfg = load_rl100_deploy_config(args.config)
     components = None
+    runner = None
     try:
         preflight, components = _ros_preflight(cfg, timeout_s=float(args.preflight_timeout_s))
         if not preflight.get("ok"):
@@ -267,9 +342,11 @@ def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
         runner = RL100TopicRealRunner(
             policy=policy,
             state_hub=state_hub,
-            point_cloud_source=lambda: hub.get_point_cloud_sample(
-                max_depth_age_s=limits.depth_max_age_s,
-                max_camera_skew_s=limits.max_camera_skew_s,
+            point_cloud_source=lambda cutoff_monotonic_s=None: hub.get_point_cloud_sample(
+                cutoff_monotonic_s=cutoff_monotonic_s,
+                max_received_age_s=limits.depth_max_age_s,
+                max_header_skew_s=limits.max_camera_skew_s,
+                max_receive_skew_s=limits.max_camera_receive_skew_s,
             ),
             publisher=publisher,
             safety=cfg.safety_gate(require_approved=live),
@@ -305,6 +382,8 @@ def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
         })
         return 0 if results and results[-1].state.value != "FAULT" else 2
     finally:
+        if runner is not None:
+            runner.close()
         if components is not None:
             hub, state_hub, publisher = components
             hub.close()

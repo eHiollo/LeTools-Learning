@@ -63,6 +63,7 @@ class _JointSample:
     stamp_s: float
     received_at_s: float
     sensor_time_s: float
+    received_monotonic_s: float = 0.0
 
 
 @dataclass
@@ -71,6 +72,7 @@ class _HandSample:
     names: tuple[str, ...]
     stamp_s: float
     received_at_s: float
+    received_monotonic_s: float = 0.0
 
 
 class TopicStateHub:
@@ -132,6 +134,7 @@ class TopicStateHub:
             self.invalid_counts["joint_shape_or_finite"] += 1
             return
         received = time.time()
+        received_monotonic = time.monotonic()
         with self._lock:
             self._record_interval("joint", received)
             self._record_range("joint", values)
@@ -140,6 +143,7 @@ class TopicStateHub:
                 _stamp_s(msg) or received,
                 received,
                 _time_field_s(getattr(msg, "sensor_time", 0.0)),
+                received_monotonic,
             )
 
     def _on_hand(self, msg: Any) -> None:
@@ -148,6 +152,7 @@ class TopicStateHub:
             names=getattr(msg, "name", ()),
             stamp_s=_stamp_s(msg),
             received_at_s=time.time(),
+            received_monotonic_s=time.monotonic(),
         )
 
     def _record_interval(self, kind: str, received: float) -> None:
@@ -175,12 +180,18 @@ class TopicStateHub:
         stamp_s: float = 0.0,
         received_at_s: float | None = None,
         sensor_time_s: float = 0.0,
+        received_monotonic_s: float | None = None,
     ) -> bool:
         array = np.asarray(values, dtype=np.float32).reshape(-1)
         if array.shape != (RL100_RAW_JOINT_DIM,) or not np.isfinite(array).all():
             self.invalid_counts["joint_shape_or_finite"] += 1
             return False
         received = time.time() if received_at_s is None else float(received_at_s)
+        received_monotonic = (
+            time.monotonic()
+            if received_monotonic_s is None
+            else float(received_monotonic_s)
+        )
         if not np.isfinite(received):
             return False
         with self._lock:
@@ -191,6 +202,7 @@ class TopicStateHub:
                 float(stamp_s) if float(stamp_s) > 0.0 else received,
                 received,
                 float(sensor_time_s) if float(sensor_time_s) > 0.0 else 0.0,
+                received_monotonic,
             )
         return True
 
@@ -201,6 +213,7 @@ class TopicStateHub:
         names: Any = RL100_DEXHAND_JOINT_NAMES,
         stamp_s: float = 0.0,
         received_at_s: float | None = None,
+        received_monotonic_s: float | None = None,
     ) -> bool:
         array = np.asarray(values, dtype=np.float32).reshape(-1)
         raw_names = () if names is None else names
@@ -215,6 +228,11 @@ class TopicStateHub:
             self.invalid_counts["hand_range_or_finite"] += 1
             return False
         received = time.time() if received_at_s is None else float(received_at_s)
+        received_monotonic = (
+            time.monotonic()
+            if received_monotonic_s is None
+            else float(received_monotonic_s)
+        )
         if not np.isfinite(received):
             return False
         with self._lock:
@@ -225,6 +243,7 @@ class TopicStateHub:
                 normalized_names,
                 float(stamp_s) if float(stamp_s) > 0.0 else received,
                 received,
+                received_monotonic,
             )
         return True
 
@@ -243,12 +262,14 @@ class TopicStateHub:
                     self._joint.stamp_s,
                     self._joint.received_at_s,
                     self._joint.sensor_time_s,
+                    self._joint.received_monotonic_s,
                 ),
                 _HandSample(
                     self._hand.value.copy(),
                     self._hand.names,
                     self._hand.stamp_s,
                     self._hand.received_at_s,
+                    self._hand.received_monotonic_s,
                 ),
             )
 
@@ -257,11 +278,29 @@ class TopicStateHub:
         joint_max_age_s: float,
         hand_max_age_s: float,
         max_skew_s: float,
+        cutoff_monotonic_s: float | None = None,
     ) -> TopicStateSample:
         joint, hand = self._snapshot()
         now = time.time()
-        joint_age = max(0.0, now - joint.received_at_s)
-        hand_age = max(0.0, now - hand.received_at_s)
+        now_monotonic = time.monotonic()
+        if cutoff_monotonic_s is not None:
+            cutoff = float(cutoff_monotonic_s)
+            if joint.received_monotonic_s > cutoff + 1e-9:
+                raise RuntimeError("raw joint state arrived after sample cutoff")
+            if hand.received_monotonic_s > cutoff + 1e-9:
+                raise RuntimeError("dexhand state arrived after sample cutoff")
+        joint_age = max(
+            0.0,
+            now_monotonic - joint.received_monotonic_s
+            if joint.received_monotonic_s > 0.0
+            else now - joint.received_at_s,
+        )
+        hand_age = max(
+            0.0,
+            now_monotonic - hand.received_monotonic_s
+            if hand.received_monotonic_s > 0.0
+            else now - hand.received_at_s,
+        )
         skew = abs(joint.stamp_s - hand.stamp_s)
         if joint_age > float(joint_max_age_s):
             raise RuntimeError(f"raw joint state stale: {joint_age:.3f}s")

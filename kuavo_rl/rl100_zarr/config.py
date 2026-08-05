@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+import warnings
 
 import numpy as np
 import yaml
@@ -25,7 +26,8 @@ from kuavo_rl.contracts import (
 LIVE_SAFETY_MAX_STEPS = 100_000
 LIVE_SAFETY_MAX_DURATION_S = 86_400.0
 
-# Same topics as kuavo_deploy obs_buffer / 模仿学习真机深度。
+# Legacy defaults for callers that do not provide an explicit camera YAML.
+# Formal real-robot RL-100 configs select raw depth explicitly below.
 _REAL_DEPTH = {
     "head": "/cam_h/depth/image_raw/compressedDepth",
     "wrist_l": "/cam_l/depth/image_rect_raw/compressedDepth",
@@ -45,7 +47,7 @@ class CameraPCConfig:
 
 
 def default_cameras() -> list[CameraPCConfig]:
-    """Three-cam depth topics aligned with Kuavo real / kuavo_deploy."""
+    """Legacy three-cam defaults; production YAMLs must select raw/image explicitly."""
     return [
         CameraPCConfig(
             name="head_cam_h",
@@ -111,6 +113,21 @@ class RL100CollectConfig:
     state_max_skew_s: float = 0.10
     depth_max_age_s: float = 0.15
     camera_max_skew_s: float = 0.10
+    # Buffered, causal cross-camera synchronization. ``camera_max_skew_s`` is
+    # retained as a legacy compatibility field; the new nested values are used
+    # when camera_sync_mode is buffered_header.
+    camera_sync_mode: str = "buffered_header"
+    camera_reference_camera: str = "head_cam_h"
+    camera_buffer_size: int = 32
+    camera_max_header_skew_s: float = 0.10
+    camera_warn_header_skew_s: float = 0.05
+    camera_max_received_age_s: float = 0.20
+    camera_max_receive_skew_s: float = 0.20
+    camera_require_monotonic_header: bool = True
+    camera_require_same_time_epoch: bool = True
+    camera_tf_at_image_stamp: bool = True
+    camera_tf_timeout_s: float = 0.05
+    camera_max_consecutive_sync_failures: int = 10
     max_consecutive_source_failures: int = 3
     require_hand_motion: bool = False
     min_hand_action_range: float = 5.0
@@ -178,9 +195,28 @@ class RL100CollectConfig:
             "state_max_skew_s",
             "depth_max_age_s",
             "camera_max_skew_s",
+            "camera_max_header_skew_s",
+            "camera_warn_header_skew_s",
+            "camera_max_received_age_s",
+            "camera_max_receive_skew_s",
+            "camera_tf_timeout_s",
         ):
             if float(getattr(self, name)) <= 0.0:
                 raise ValueError(f"{name} must be positive")
+        if self.camera_sync_mode not in {"buffered_header", "latest_legacy"}:
+            raise ValueError("camera_sync_mode must be buffered_header or latest_legacy")
+        if self.camera_sync_mode == "buffered_header" and not self.camera_tf_at_image_stamp:
+            raise ValueError("buffered_header requires tf_at_image_stamp=true")
+        if self.camera_buffer_size < 2:
+            raise ValueError("camera_buffer_size must be >= 2")
+        if self.camera_warn_header_skew_s > self.camera_max_header_skew_s:
+            raise ValueError("camera_warn_header_skew_s must be <= camera_max_header_skew_s")
+        if self.camera_reference_camera not in {c.name for c in self.cameras if c.enabled}:
+            raise ValueError(
+                f"camera_reference_camera={self.camera_reference_camera!r} is not an enabled camera"
+            )
+        if self.camera_max_consecutive_sync_failures < 1:
+            raise ValueError("camera_max_consecutive_sync_failures must be >= 1")
         if int(self.max_consecutive_source_failures) < 1:
             raise ValueError("max_consecutive_source_failures must be >= 1")
 
@@ -207,6 +243,21 @@ class RL100CollectConfig:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "RL100CollectConfig":
+        camera_sync_raw = raw.get("camera_sync") or {}
+        legacy_skew = raw.get("camera_max_skew_s")
+        nested_skew = camera_sync_raw.get("max_header_skew_s")
+        if legacy_skew is not None and nested_skew is not None:
+            try:
+                differs = not np.isclose(float(legacy_skew), float(nested_skew))
+            except (TypeError, ValueError):
+                differs = True
+            if differs:
+                warnings.warn(
+                    "camera_sync.max_header_skew_s overrides legacy camera_max_skew_s; "
+                    f"legacy={legacy_skew!r}, active={nested_skew!r}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         cams_raw = raw.get("cameras")
         if cams_raw is None:
             cameras = default_cameras()
@@ -263,6 +314,69 @@ class RL100CollectConfig:
             state_max_skew_s=float(raw.get("state_max_skew_s", 0.10)),
             depth_max_age_s=float(raw.get("depth_max_age_s", 0.15)),
             camera_max_skew_s=float(raw.get("camera_max_skew_s", 0.10)),
+            camera_sync_mode=str(
+                camera_sync_raw.get(
+                    "mode", raw.get("camera_sync_mode", "buffered_header")
+                )
+            ),
+            camera_reference_camera=str(
+                camera_sync_raw.get(
+                    "reference_camera", raw.get("camera_reference_camera", "head_cam_h")
+                )
+            ),
+            camera_buffer_size=int(
+                camera_sync_raw.get(
+                    "buffer_size", raw.get("camera_buffer_size", 32)
+                )
+            ),
+            camera_max_header_skew_s=float(
+                camera_sync_raw.get(
+                    "max_header_skew_s", raw.get("camera_max_header_skew_s", 0.10)
+                )
+            ),
+            camera_warn_header_skew_s=float(
+                camera_sync_raw.get(
+                    "warn_header_skew_s", raw.get("camera_warn_header_skew_s", 0.05)
+                )
+            ),
+            camera_max_received_age_s=float(
+                camera_sync_raw.get(
+                    "max_received_age_s", raw.get("camera_max_received_age_s", 0.20)
+                )
+            ),
+            camera_max_receive_skew_s=float(
+                camera_sync_raw.get(
+                    "max_receive_skew_s", raw.get("camera_max_receive_skew_s", 0.20)
+                )
+            ),
+            camera_require_monotonic_header=bool(
+                camera_sync_raw.get(
+                    "require_monotonic_header",
+                    raw.get("camera_require_monotonic_header", True),
+                )
+            ),
+            camera_require_same_time_epoch=bool(
+                camera_sync_raw.get(
+                    "require_same_time_epoch",
+                    raw.get("camera_require_same_time_epoch", True),
+                )
+            ),
+            camera_tf_at_image_stamp=bool(
+                camera_sync_raw.get(
+                    "tf_at_image_stamp", raw.get("camera_tf_at_image_stamp", True)
+                )
+            ),
+            camera_tf_timeout_s=float(
+                camera_sync_raw.get(
+                    "tf_timeout_s", raw.get("camera_tf_timeout_s", 0.05)
+                )
+            ),
+            camera_max_consecutive_sync_failures=int(
+                camera_sync_raw.get(
+                    "max_consecutive_sync_failures",
+                    raw.get("camera_max_consecutive_sync_failures", 10),
+                )
+            ),
             max_consecutive_source_failures=int(raw.get("max_consecutive_source_failures", 3)),
             require_hand_motion=bool(raw.get("require_hand_motion", raw.get("require_gripper_motion", False))),
             min_hand_action_range=float(raw.get("min_hand_action_range", raw.get("min_gripper_action_range", 5.0))),

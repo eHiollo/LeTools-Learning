@@ -46,6 +46,36 @@ def _zarr_attrs(cfg, *, smoke: bool = False) -> dict[str, object]:
         "state_dim": cfg.state_dim,
         "action_dim": cfg.action_dim,
         "smooth_penalty": cfg.smooth_penalty,
+        "camera_sync": {
+            "label": (
+                "UNSYNCHRONIZED_LEGACY"
+                if cfg.camera_sync_mode == "latest_legacy"
+                else "BUFFERED_HEADER"
+            ),
+            "mode": cfg.camera_sync_mode,
+            "reference_camera": cfg.camera_reference_camera,
+            "buffer_size": cfg.camera_buffer_size,
+            "max_header_skew_s": cfg.camera_max_header_skew_s,
+            "warn_header_skew_s": cfg.camera_warn_header_skew_s,
+            "max_received_age_s": min(
+                cfg.depth_max_age_s,
+                cfg.camera_max_received_age_s,
+            ),
+            "max_receive_skew_s": cfg.camera_max_receive_skew_s,
+            "tf_at_image_stamp": cfg.camera_tf_at_image_stamp,
+            "tf_timeout_s": cfg.camera_tf_timeout_s,
+        },
+        "camera_topics": [
+            {
+                "name": camera.name,
+                "depth_topic": camera.depth_topic,
+                "camera_info_topic": camera.camera_info_topic,
+                "depth_msg_type": camera.depth_msg_type,
+                "frame_id": camera.frame_id,
+            }
+            for camera in cfg.cameras
+            if camera.enabled
+        ],
         "collection_config_sha256": _config_sha256(getattr(cfg, "config_path", None)),
         "smoke": smoke,
     }
@@ -86,6 +116,22 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         "env_config": cfg.env_config,
         "require_all_cameras": cfg.require_all_cameras,
         "fail_on_empty_pointcloud": cfg.fail_on_empty_pointcloud,
+        "camera_sync": {
+            "label": (
+                "UNSYNCHRONIZED_LEGACY"
+                if cfg.camera_sync_mode == "latest_legacy"
+                else "BUFFERED_HEADER"
+            ),
+            "mode": cfg.camera_sync_mode,
+            "reference_camera": cfg.camera_reference_camera,
+            "buffer_size": cfg.camera_buffer_size,
+            "max_header_skew_s": cfg.camera_max_header_skew_s,
+            "warn_header_skew_s": cfg.camera_warn_header_skew_s,
+            "max_received_age_s": cfg.camera_max_received_age_s,
+            "max_receive_skew_s": cfg.camera_max_receive_skew_s,
+            "tf_at_image_stamp": cfg.camera_tf_at_image_stamp,
+            "tf_timeout_s": cfg.camera_tf_timeout_s,
+        },
         "command_topics": {
             "arm": cfg.arm_traj_topic,
             "hand": cfg.hand_command_topic,
@@ -125,7 +171,10 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             hub.start()
             state_hub.start()
             try:
-                out["ros_pointcloud"] = hub.preflight(timeout_s=float(args.timeout_s))
+                out["ros_pointcloud"] = hub.preflight(
+                    timeout_s=float(args.timeout_s),
+                    profile_s=float(args.profile_s),
+                )
                 out["ros_state"] = state_hub.preflight(
                     timeout_s=min(float(args.timeout_s), 10.0),
                     profile_s=float(args.profile_s),
@@ -336,7 +385,12 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--task")
     sp.add_argument("--check-ros", action="store_true")
     sp.add_argument("--timeout-s", type=float, default=5.0)
-    sp.add_argument("--profile-s", type=float, default=0.0, help="state topic rate profile duration")
+    sp.add_argument(
+        "--profile-s",
+        type=float,
+        default=0.0,
+        help="camera sync and state topic profile duration",
+    )
     sp.set_defaults(func=cmd_preflight)
 
     ss = sub.add_parser("smoke", help="Synthetic episodes → zarr (no ROS)")

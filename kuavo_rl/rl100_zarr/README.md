@@ -88,10 +88,10 @@ roslaunch configs/launch/hil_upper_cams.launch
 确认三路有深度后再开 B：
 
 ```bash
-# 头、双腕目标均为 ~30Hz
-rostopic hz /camera/depth/image_raw/compressedDepth
-rostopic hz /left_wrist_camera/depth/image_rect_raw/compressedDepth
-rostopic hz /right_wrist_camera/depth/image_rect_raw/compressedDepth
+# 头、双腕 raw depth 目标均为 ~30Hz
+rostopic hz /camera/depth/image_raw
+rostopic hz /left_wrist_camera/depth/image_rect_raw
+rostopic hz /right_wrist_camera/depth/image_rect_raw
 ```
 
 

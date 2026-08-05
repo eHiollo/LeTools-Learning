@@ -121,7 +121,11 @@ def test_pointcloud_sample_reports_source_timing_without_ros(monkeypatch):
         depth_m=np.ones((20, 20), np.float32), intrinsics=(20.0, 20.0, 10.0, 10.0),
         stamp=now - 0.01, received_at=now - 0.01, frame_id="cam",
     )
-    monkeypatch.setattr(hub, "_lookup_T_base_cam", lambda frame: np.eye(4, dtype=np.float32))
+    monkeypatch.setattr(
+        hub,
+        "_lookup_T_base_cam",
+        lambda frame, stamp=None: np.eye(4, dtype=np.float32),
+    )
     sample = hub.get_point_cloud_sample(max_depth_age_s=1.0, max_camera_skew_s=0.1)
     assert sample.points.shape == (1024, 3)
     assert sample.valid_points == 1024
@@ -145,6 +149,8 @@ def test_default_config_aligns_real_collect():
     assert yaml_cfg.task == "box_to_chest_v1"
     assert "deploy_total.yaml" in yaml_cfg.deploy_config
     assert yaml_cfg.live_max_steps >= 100_000
+    assert all(c.depth_msg_type == "image" for c in yaml_cfg.cameras)
+    assert all("compressedDepth" not in c.depth_topic for c in yaml_cfg.cameras)
 
     upper_cfg = load_rl100_collect_config(
         "configs/rl/rl100_zarr_collect_upper_cams.yaml"
@@ -152,7 +158,9 @@ def test_default_config_aligns_real_collect():
     assert upper_cfg.task == "grasp_8_4_v2"
     assert upper_cfg.only_success is True
     assert upper_cfg.hand_command_topic == "/control_robot_hand_position"
-    assert upper_cfg.require_hand_motion is True
+    assert upper_cfg.require_hand_motion is False
+    assert upper_cfg.camera_sync_mode == "buffered_header"
+    assert upper_cfg.camera_max_header_skew_s == pytest.approx(0.10)
 
 
 def test_episode_action_quality_rejects_hold_state_and_constant_gripper():
