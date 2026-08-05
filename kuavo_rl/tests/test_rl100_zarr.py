@@ -31,6 +31,27 @@ def test_assign_episode_rewards_success_vs_failure():
     assert np.allclose(r_ok[:-1], 0.0)
 
 
+def test_smooth_reward_ignores_hand_commands():
+    actions = np.zeros((3, ACTION_DIM), dtype=np.float32)
+    actions[1:, 14:] = 100.0
+    hand_only = assign_episode_rewards(
+        actions,
+        is_success=False,
+        smooth_penalty=1.0,
+    )
+    assert np.allclose(hand_only, 0.0)
+
+    actions[1, 0] = 2.0
+    actions[2, 0] = 2.0
+    arm_only = assign_episode_rewards(
+        actions,
+        is_success=False,
+        smooth_penalty=1.0,
+    )
+    assert arm_only[1] < 0.0
+    assert arm_only[2] == 0.0
+
+
 def test_should_keep_episode_filter():
     assert should_keep_episode("success", only_success=False)
     assert should_keep_episode("failure", only_success=False)

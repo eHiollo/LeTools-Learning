@@ -60,8 +60,6 @@ def write_rl100_zarr(
         "schema": "rl100-zarr-v1",
     }
     requested_attrs = attrs or {}
-    if float(requested_attrs.get("smooth_penalty", 0.0)) != 0.0:
-        raise ValueError("topic-native zarr requires smooth_penalty=0.0")
     for key, expected in required_attrs.items():
         if key in requested_attrs and requested_attrs[key] != expected:
             raise ValueError(f"zarr required attr {key} must be {expected!r}")

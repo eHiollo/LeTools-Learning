@@ -151,8 +151,6 @@ class RL100CollectConfig:
             raise ValueError("RL-100 topic-native collection requires state/action 32/26")
         if self.arm_command_dim != RL100_ARM_COMMAND_DIM or self.hand_command_dim != RL100_HAND_COMMAND_DIM:
             raise ValueError("RL-100 command dimensions must be arm14/hand12")
-        if float(self.smooth_penalty) != 0.0:
-            raise ValueError("topic-native RL-100 requires smooth_penalty=0.0 until unit scales are configured")
         if self.raw_joint_dim != RL100_RAW_JOINT_DIM or self.dexhand_state_dim != RL100_DEXHAND_STATE_DIM:
             raise ValueError("RL-100 raw joint/hand state dimensions must be 20/12")
         if len(self.hand_default) != RL100_HAND_COMMAND_DIM:

@@ -32,17 +32,20 @@ def assign_episode_rewards(
         terminal = 1.0 - float(lambda_penalty) * (t / max(max_episode_len, 1))
         rewards[-1] = float(terminal)
 
-    if smooth_penalty > 0.0 and acts.shape[1] == 26 and smooth_scales is None:
-        raise ValueError(
-            "mixed-unit RL-100 action smoothness requires explicit smooth_scales; "
-            "use smooth_penalty=0.0 for the topic-native contract"
-        )
     if smooth_penalty > 0.0 and t > 1:
-        delta = acts[1:] - acts[:-1]
+        # Topic-native RL-100 actions contain arm degrees followed by hand
+        # positions in the raw 0..100 scale.  Hand commands are intentional
+        # discrete-ish events, so only the homogeneous arm14 part contributes
+        # to this legacy smoothness term.  The stored/trained action remains
+        # the full 26-dimensional vector.
+        smooth_acts = acts[:, :14] if acts.shape[1] == 26 else acts
+        delta = smooth_acts[1:] - smooth_acts[:-1]
         if smooth_scales is not None:
             scales = np.asarray(smooth_scales, dtype=np.float32).reshape(-1)
-            if scales.shape != (acts.shape[1],) or not np.isfinite(scales).all() or np.any(scales <= 0.0):
-                raise ValueError("smooth_scales must be finite, positive and action-dimensional")
+            if scales.shape == (acts.shape[1],) and acts.shape[1] == 26:
+                scales = scales[:14]
+            if scales.shape != (smooth_acts.shape[1],) or not np.isfinite(scales).all() or np.any(scales <= 0.0):
+                raise ValueError("smooth_scales must be finite, positive and arm-dimensional")
             delta = delta / scales
         deltas = np.linalg.norm(delta, axis=-1)
         rewards[1:] -= float(smooth_penalty) * deltas.astype(np.float32)
