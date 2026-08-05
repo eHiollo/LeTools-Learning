@@ -121,11 +121,13 @@ def _make_ros_components(cfg):
     return hub, state_hub, publisher
 
 
-def _ros_preflight(cfg, *, timeout_s: float) -> tuple[dict[str, Any], tuple[Any, Any, Any]]:
+def _ros_preflight(
+    cfg, *, timeout_s: float, profile_s: float = 0.0
+) -> tuple[dict[str, Any], tuple[Any, Any, Any]]:
     hub, state_hub, publisher = _make_ros_components(cfg)
     limits = cfg.runner_limits()
     point_report = hub.preflight(timeout_s=timeout_s)
-    state_report = state_hub.preflight(timeout_s=timeout_s)
+    state_report = state_hub.preflight(timeout_s=min(timeout_s, 5.0), profile_s=profile_s)
     connections = publisher.connection_counts()
     publishers_ok = all(value > 0 for value in connections.values())
     if not point_report.get("ok", False) or not state_report.get("ok", False):
@@ -200,7 +202,11 @@ def cmd_ros_preflight(args: argparse.Namespace) -> int:
     cfg = load_rl100_deploy_config(args.config)
     components = None
     try:
-        report, components = _ros_preflight(cfg, timeout_s=float(args.duration_s))
+        report, components = _ros_preflight(
+            cfg,
+            timeout_s=min(float(args.duration_s), 10.0),
+            profile_s=float(args.duration_s),
+        )
         _print(report)
         return 0 if report.get("ok") else 2
     finally:
@@ -310,6 +316,7 @@ def cmd_offline_replay(args: argparse.Namespace) -> int:
     import numpy as np
     import zarr
 
+    from kuavo_rl.contracts import RL100_ACTION_DIM, RL100_STATE_DIM, RL100_TOPIC_NATIVE_CONTRACT
     from kuavo_rl.rl100_deploy_config import load_rl100_deploy_config
     from kuavo_rl.rl100_real_runner import RL100TopicObservationHistory
 
@@ -318,6 +325,17 @@ def cmd_offline_replay(args: argparse.Namespace) -> int:
         raise RuntimeError("refusing known-invalid old grasp_8_4.zarr")
     policy = _policy_from_config(cfg)
     root = zarr.open(str(args.zarr_path), mode="r")
+    attrs = root.attrs
+    if attrs.get("contract") != RL100_TOPIC_NATIVE_CONTRACT:
+        raise RuntimeError(
+            "offline zarr contract must be "
+            f"{RL100_TOPIC_NATIVE_CONTRACT!r}, got {attrs.get('contract')!r}"
+        )
+    if int(attrs.get("state_dim", -1)) != RL100_STATE_DIM or int(attrs.get("action_dim", -1)) != RL100_ACTION_DIM:
+        raise RuntimeError(
+            "offline zarr attrs must declare state_dim=32/action_dim=26, "
+            f"got {attrs.get('state_dim')!r}/{attrs.get('action_dim')!r}"
+        )
     states = np.asarray(root["data"]["state"][:], dtype=np.float32)
     actions = np.asarray(root["data"]["action"][:], dtype=np.float32)
     points = np.asarray(root["data"]["point_cloud"][:], dtype=np.float32)

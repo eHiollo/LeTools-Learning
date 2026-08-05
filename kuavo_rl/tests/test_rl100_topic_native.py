@@ -105,6 +105,9 @@ def test_state_hub_preserves_20_plus_12_and_checks_hand_names():
     )
     sample = hub.snapshot(1.0, 1.0, 0.1)
     np.testing.assert_array_equal(sample.state32, np.concatenate([raw, hand]))
+    report = hub.preflight(timeout_s=0.0)
+    np.testing.assert_array_equal(report["joint_value_min"], raw)
+    np.testing.assert_array_equal(report["dexhand_value_max"], hand)
     assert not hub.update_hand(hand, names=list(RL100_DEXHAND_JOINT_NAMES[:-1]), received_at_s=now)
     assert hub.invalid_counts["hand_names"] == 1
 
@@ -125,6 +128,7 @@ def test_safety_gate_converts_arm_and_clips_hand_before_publish():
     assert result.ok and result.clipped and result.fault_code == FaultCode.NONE
     np.testing.assert_allclose(result.command.arm14_deg, np.rad2deg(np.full(14, 0.5)))
     np.testing.assert_array_equal(result.command.hand12_uint8, np.full(12, 100, dtype=np.uint8))
+    np.testing.assert_array_equal(gate.hold_command(measured).hand12_uint8, np.full(12, 100, dtype=np.uint8))
     direct = build_rl100_topic_command(raw)
     np.testing.assert_array_equal(direct.hand12_uint8, np.full(12, 100, dtype=np.uint8))
 

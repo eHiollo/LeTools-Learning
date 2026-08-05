@@ -554,7 +554,6 @@ class RL100TopicSafetyGate:
             self.consecutive_clips += 1
         else:
             self.consecutive_clips = 0
-        self._last_action26 = limited.copy()
         command = self._command_from_values(raw, limited, clip_mask)
         if self.max_consecutive_clips > 0 and self.consecutive_clips >= self.max_consecutive_clips:
             return RL100TopicSafetyResult(
@@ -564,6 +563,7 @@ class RL100TopicSafetyGate:
                 FaultCode.ACTION_LIMIT,
                 "consecutive topic-native safety clips exceeded",
             )
+        self._last_action26 = limited.copy()
         return RL100TopicSafetyResult(True, command, clipped, FaultCode.NONE, "")
 
     @staticmethod
@@ -585,7 +585,8 @@ class RL100TopicSafetyGate:
 
     def _hold_command(self, measured: np.ndarray) -> RL100TopicPublishedCommand:
         arm_deg = np.rad2deg(measured[RL100_ARM_SLICE_RAW20]).astype(np.float32)
-        action = np.concatenate([arm_deg, measured[20:32]]).astype(np.float32)
+        hand = measured[20:32] if self._last_action26 is None else self._last_action26[14:]
+        action = np.concatenate([arm_deg, hand]).astype(np.float32)
         return self._command_from_values(action, action, np.zeros(RL100_ACTION_DIM, dtype=bool))
 
     def hold_command(self, measured: np.ndarray) -> RL100TopicPublishedCommand:

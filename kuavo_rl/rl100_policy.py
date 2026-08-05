@@ -166,6 +166,12 @@ class RL100Policy:
             raise ValueError(
                 f"checkpoint contract {cfg_contract!r} != {RL100_TOPIC_NATIVE_CONTRACT!r}"
             )
+        payload_contract = _get(payload, "contract", None)
+        if payload_contract is not None and str(payload_contract) != RL100_TOPIC_NATIVE_CONTRACT:
+            raise ValueError(
+                f"checkpoint payload contract {payload_contract!r} != "
+                f"{RL100_TOPIC_NATIVE_CONTRACT!r}"
+            )
         policy_cfg = _get(cfg, "policy")
         if policy_cfg is None:
             raise ValueError("checkpoint cfg has no policy")

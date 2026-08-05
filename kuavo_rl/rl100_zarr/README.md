@@ -23,13 +23,13 @@ data/rl100/grasp_8_4_v2/episodes/*.npz
 data/rl100/grasp_8_4_v2/grasp_8_4_v2.zarr
 ```
 
-旧的 `third_party/RL-100/data/grasp_8_4.zarr` 存在 `action == state`、
-夹爪维恒定且超出 `[0,1]` 的问题，禁止用于 BC 训练。
+旧的 `third_party/RL-100/data/grasp_8_4.zarr` 是旧的 16/16 数据，禁止与
+`rl100_topic_native_v1` 数据混合训练。
 
 | field | shape | note |
 |-------|-------|------|
-| `state` / `next_state` | `(T, 16)` | Kuavo joint+claw |
-| `action` / `next_action` | `(T, 16)` | absolute joint targets |
+| `state` / `next_state` | `(T, 32)` | raw `joint_q20` (rad) + dexhand feedback12 (0..100) |
+| `action` / `next_action` | `(T, 26)` | arm topic degree14 + Qiangnao command raw12 (0..100) |
 | `point_cloud` / `next_*` | `(T, 1024, 3)` | fused multi-cam FPS |
 | `reward` / `return` / `done` / `timeout` | `(T, 1)` | sparse success + penalties |
 | `meta/episode_ends` | `(E,)` | episode boundaries |
@@ -125,37 +125,44 @@ conda activate letools-rl
 cd ~/wjy/robot-il/LeTools-Learning
 # env.sh 会被脚本自动 source（设 ROS_MASTER_URI / ROS_IP）
 
-bash scripts/rl/run_rl100_zarr_collect.sh preflight --check-ros --timeout-s 10
-# 目标: ros_pointcloud.ok == true（三路 depth+info+tf）
+bash scripts/rl/run_rl100_zarr_collect.sh preflight --check-ros --timeout-s 10 --profile-s 60
+# 目标: ros_pointcloud.ok 与 ros_state.ok 均为 true；profile 输出两路状态频率、p50/p95/p99、min/max
 
 bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live --build-after
 ```
 
-采集进程启动时还会自动检查下面两路 action 命令流，二者必须持续更新：
+采集进程订阅下面两路事件驱动 command。它们不要求每个采样周期都有新消息，首次合法消息后永久
+hold-last；任意一路先到都可以开始写样本：
 
 ```text
 /kuavo_arm_traj                 # 14-D 机械臂目标，消息内为 degree
 /control_robot_hand_position    # 强脑手左右各 6-D，范围 0..100
 ```
 
-强脑手 state 从 `/dexhand/state` 读取。12 维顺序为：
+state 从两个原始状态 topic 读取，不用 command 覆盖 state。`/sensors_data_raw` 必须是完整 20 维
+rad；强脑手 state 从 `/dexhand/state` 读取，必须严格是 12 维。顺序为：
 
 ```text
 l_thumb, l_thumb_aux, l_index, l_middle, l_ring, l_pinky,
 r_thumb, r_thumb_aux, r_index, r_middle, r_ring, r_pinky
 ```
 
-RL-100 的 16-D 契约为
-`[L7, left_gripper, R7, right_gripper]`。当前 1-DoF 强脑手映射取
-`/dexhand/state.position[0]` 和 `[6]`，并除以 100 归一化到 `[0,1]`；
-action 同样取左右 `robotHandPosition` 的第 0 维。
+RL-100 topic-native 契约为 `state32/action26`：`state = joint_q20 + dexhand_state12`，
+`action = arm_traj.position14_deg + left_hand6 + right_hand6`。不做 16 维重排、手部标量压缩或单位归一化。
+录制开始前会检查 dexhand feedback 是否接近固定默认值
+`[0,99,0,0,0,0,0,99,0,0,0,0]`；手臂先动时，首条手部 command 前 action 使用默认 hold，
+手部先动时，首条手臂 command 前使用录制起点实测双臂的 degree hold。
 
 以下情况会直接丢弃当前 episode，不写入 staging：
 
-- 机械臂或强脑手命令缺失/超过 0.2 秒未更新；
-- 机械臂所有 action 与同帧 state 无有效差异；
-- 左右手均没有至少 0.05 的归一化开合范围；
-- action 出现 NaN/Inf，或夹爪 action 超出 `[0,1]`。
+- 整个 episode 没有收到任一路合法 command；
+- raw state 维度/名称/范围、command 维度/范围不合法，或数据出现 NaN/Inf；
+- 点云、joint state、dexhand state 连续超过 freshness/skew 阈值；
+- 配置要求手部动作但 12 个手指 action 的最大 range 不足；
+- command `received_at` 晚于采样 cutoff，或有效 header stamp 倒退。
+
+每个 staging NPZ 还保存逐帧 `audit__*` 数组，包括 sample cutoff、两个状态时间、两个命令时间、
+changed/seen/source、age/skew 和点云 freshness；这些字段不是塞进单个 `meta_json`。
 
 ### 采集后验收
 
@@ -167,10 +174,12 @@ bash scripts/rl/run_rl100_zarr_collect.sh inspect \
 必须满足：
 
 ```text
+root.attrs.contract == rl100_topic_native_v1
+data/state.shape[-1] == 32
+data/action.shape[-1] == 26
 action_quality.ok: true
-arm_action_state_max_abs_rad > 0.0001
-left/right 至少一个 gripper_action_range >= 0.05
-gripper_action_min/max 均在 [0,1]
+causality_violation_count == 0
+action_hand12_raw min/max 均在 [0,100]
 ```
 
 训练前将验收通过的数据复制到 RL-100 数据目录（旧数据保留作问题样本）：
@@ -265,10 +274,12 @@ LD_PRELOAD="$GOMP" python -c "import torch, cv_bridge; print(torch.__version__)"
 
 ## RL-100 真机部署
 
-部署实现位于 `kuavo_rl/rl100_policy.py` 与 `kuavo_rl/rl100_real_runner.py`，详细设计见
-[`docs/RL100_REAL_ROBOT_DEPLOYMENT_PLAN.md`](../../docs/RL100_REAL_ROBOT_DEPLOYMENT_PLAN.md)。
+部署实现位于 `kuavo_rl/rl100_policy.py` 与 `kuavo_rl/rl100_real_runner.py`，topic-native 设计见
+[`docs/RL100_TOPIC_NATIVE_COLLECTION_DEPLOYMENT_PLAN.md`](../../docs/RL100_TOPIC_NATIVE_COLLECTION_DEPLOYMENT_PLAN.md)。
 默认配置 `configs/rl/rl100_real_deploy.yaml` 是 shadow 模式；现场批准的 14 维关节限位和
-16 维起始姿态未填写时，`live` 会拒绝启动。
+手部默认姿态未确认时，`live` 会拒绝启动。部署端复用同一 `TopicStateHub` 和三相机点云契约，
+模型输出经安全门后直接发布 `/kuavo_arm_traj`（degree + `arm_joint_0..13`）与
+`/control_robot_hand_position`（左右各 6 个 uint8）。
 
 ```bash
 bash scripts/rl/run_rl100_real.sh inspect-checkpoint \

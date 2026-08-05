@@ -1,10 +1,10 @@
 # RL-100 Topic-Native 采集与实机部署执行方案
 
-本文是后续代码实现者的执行规格。目标是让训练数据中的 state/action 与真实 ROS topic
+本文是 RL-100 topic-native 采集与部署的执行规格，当前仓库代码已按此规格落地。目标是让训练数据中的 state/action 与真实 ROS topic
 逐字段、逐顺序、逐单位对应，使策略输出可以经过安全检查后直接发布到原控制话题。
 
 本方案替代当前 `state16/action16`、Qiangnao 1-DoF 压缩以及
-`action[t] = state[t+1]` 的临时方案。本文只描述改造，不代表代码已经完成。
+`action[t] = state[t+1]` 的临时方案。实机 ROS 话题、控制模式和现场限位仍需按文档中的验收步骤确认。
 
 ## 1. 已锁定的最终契约
 

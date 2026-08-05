@@ -128,6 +128,10 @@ def load_rl100_deploy_config(path: str | Path) -> RL100DeployConfig:
     publish = raw.get("publish", {})
     if str(publish.get("arm_unit", "degree")) != "degree":
         raise ValueError("topic-native arm publishing requires publish.arm_unit=degree")
+    if list(publish.get("hand_range", [])) != [0, 100]:
+        raise ValueError("publish.hand_range must be [0,100]")
+    if str(publish.get("hand_rounding", "nearest")) != "nearest":
+        raise ValueError("topic-native hand publishing requires nearest rounding")
     if list(publish.get("arm_joint_names", [])) != [f"arm_joint_{i}" for i in range(14)]:
         raise ValueError("publish.arm_joint_names must be arm_joint_0..arm_joint_13")
     cfg.execute_steps

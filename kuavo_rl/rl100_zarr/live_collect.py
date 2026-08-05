@@ -130,6 +130,12 @@ def _summary_stats(values: np.ndarray) -> dict[str, float | None]:
     }
 
 
+def _display_source(value: Any) -> str:
+    if isinstance(value, (bytes, bytearray, np.bytes_)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return str(value)
+
+
 def episode_action_quality_report(
     states: list[np.ndarray],
     actions: list[np.ndarray],
@@ -168,8 +174,8 @@ def episode_action_quality_report(
         report["arm_command_changed_ratio"] = float(arm_changed.mean()) if arm_changed.size else None
         report["hand_command_changed_ratio"] = float(hand_changed.mean()) if hand_changed.size else None
         report["initial_command_source"] = {
-            "arm": str(np.asarray(audit.get("arm_command_source", ["unknown"]), dtype=object)[0]),
-            "hand": str(np.asarray(audit.get("hand_command_source", ["unknown"]), dtype=object)[0]),
+            "arm": _display_source(np.asarray(audit.get("arm_command_source", ["unknown"]), dtype=object)[0]),
+            "hand": _display_source(np.asarray(audit.get("hand_command_source", ["unknown"]), dtype=object)[0]),
         }
         for key, out_key in (
             ("joint_age", "joint_age_s"),

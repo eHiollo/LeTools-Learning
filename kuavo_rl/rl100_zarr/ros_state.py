@@ -97,6 +97,10 @@ class TopicStateHub:
         self._hand_intervals: deque[float] = deque(maxlen=4096)
         self._last_joint_received: float | None = None
         self._last_hand_received: float | None = None
+        self._joint_min: np.ndarray | None = None
+        self._joint_max: np.ndarray | None = None
+        self._hand_min: np.ndarray | None = None
+        self._hand_max: np.ndarray | None = None
         self.invalid_counts = defaultdict(int)
 
     def start(self) -> None:
@@ -130,6 +134,7 @@ class TopicStateHub:
         received = time.time()
         with self._lock:
             self._record_interval("joint", received)
+            self._record_range("joint", values)
             self._joint = _JointSample(
                 values.copy(),
                 _stamp_s(msg) or received,
@@ -155,6 +160,14 @@ class TopicStateHub:
                 self._hand_intervals.append(received - self._last_hand_received)
             self._last_hand_received = received
 
+    def _record_range(self, kind: str, values: np.ndarray) -> None:
+        if kind == "joint":
+            self._joint_min = values.copy() if self._joint_min is None else np.minimum(self._joint_min, values)
+            self._joint_max = values.copy() if self._joint_max is None else np.maximum(self._joint_max, values)
+        else:
+            self._hand_min = values.copy() if self._hand_min is None else np.minimum(self._hand_min, values)
+            self._hand_max = values.copy() if self._hand_max is None else np.maximum(self._hand_max, values)
+
     def update_joint(
         self,
         values: Any,
@@ -172,6 +185,7 @@ class TopicStateHub:
             return False
         with self._lock:
             self._record_interval("joint", received)
+            self._record_range("joint", array)
             self._joint = _JointSample(
                 array.copy(),
                 float(stamp_s) if float(stamp_s) > 0.0 else received,
@@ -205,6 +219,7 @@ class TopicStateHub:
             return False
         with self._lock:
             self._record_interval("hand", received)
+            self._record_range("hand", array)
             self._hand = _HandSample(
                 array.copy(),
                 normalized_names,
@@ -281,17 +296,24 @@ class TopicStateHub:
             "interval_p99_s": float(np.quantile(values, 0.99)),
         }
 
-    def preflight(self, timeout_s: float = 5.0) -> dict[str, Any]:
+    def preflight(self, timeout_s: float = 5.0, profile_s: float = 0.0) -> dict[str, Any]:
+        """Wait for both state topics, optionally profile their rates for ``profile_s``."""
         deadline = time.time() + float(timeout_s)
+        ready = False
         while time.time() < deadline:
             with self._lock:
                 ready = self._joint is not None and self._hand is not None
             if ready:
                 break
             time.sleep(0.02)
+        if ready and float(profile_s) > 0.0:
+            profile_deadline = time.time() + float(profile_s)
+            while time.time() < profile_deadline:
+                time.sleep(min(0.05, max(0.0, profile_deadline - time.time())))
         with self._lock:
             report = {
                 "ok": self._joint is not None and self._hand is not None,
+                "profile_s": float(profile_s),
                 "sensors_topic": self.sensors_topic,
                 "dexhand_state_topic": self.dexhand_state_topic,
                 "raw_joint_dim": int(self._joint.value.size) if self._joint is not None else None,
@@ -300,6 +322,10 @@ class TopicStateHub:
                 "expected_dexhand_names": list(RL100_DEXHAND_JOINT_NAMES),
                 "joint_rate": self._rate_report(self._joint_intervals),
                 "dexhand_rate": self._rate_report(self._hand_intervals),
+                "joint_value_min": self._joint_min.tolist() if self._joint_min is not None else None,
+                "joint_value_max": self._joint_max.tolist() if self._joint_max is not None else None,
+                "dexhand_value_min": self._hand_min.tolist() if self._hand_min is not None else None,
+                "dexhand_value_max": self._hand_max.tolist() if self._hand_max is not None else None,
                 "invalid_counts": dict(self.invalid_counts),
             }
         return report

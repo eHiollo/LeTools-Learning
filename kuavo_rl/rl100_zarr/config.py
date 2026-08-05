@@ -167,6 +167,12 @@ class RL100CollectConfig:
                 "hand_default must remain the fixed topic-native pre-hand-command hold "
                 f"{RL100_HAND_DEFAULT.tolist()}"
             )
+        if not self.start_on_any_command:
+            raise ValueError("topic-native collection requires start_on_any_command=true")
+        if not self.command_hold_last:
+            raise ValueError("topic-native collection requires command_hold_last=true")
+        if self.command_timeout_s is not None:
+            raise ValueError("topic-native command_timeout_s must remain null (commands hold indefinitely)")
         for name in (
             "hand_default_tolerance",
             "joint_state_max_age_s",

@@ -46,6 +46,26 @@ def write_rl100_zarr(
     if buffers.n_episodes() == 0:
         raise RuntimeError("episode_ends is empty; call close_episode() per episode")
 
+    required_attrs = {
+        "contract": RL100_TOPIC_NATIVE_CONTRACT,
+        "state_dim": RL100_STATE_DIM,
+        "action_dim": RL100_ACTION_DIM,
+        "state_order": "raw_joint_q20 + dexhand_position12",
+        "action_order": "arm14_deg + left_hand6_raw + right_hand6_raw",
+        "state_units": {"raw_joint_q20": "rad", "dexhand_position12": "0..100"},
+        "action_units": {"arm14_deg": "degree", "hand12_raw": "0..100"},
+        "dexhand_joint_names": list(RL100_DEXHAND_JOINT_NAMES),
+        "arm_joint_names": list(RL100_ARM_JOINT_NAMES),
+        "hand_default": RL100_HAND_DEFAULT.tolist(),
+        "schema": "rl100-zarr-v1",
+    }
+    requested_attrs = attrs or {}
+    if float(requested_attrs.get("smooth_penalty", 0.0)) != 0.0:
+        raise ValueError("topic-native zarr requires smooth_penalty=0.0")
+    for key, expected in required_attrs.items():
+        if key in requested_attrs and requested_attrs[key] != expected:
+            raise ValueError(f"zarr required attr {key} must be {expected!r}")
+
     out = Path(output_path)
     if out.exists():
         if not overwrite:
@@ -73,12 +93,9 @@ def write_rl100_zarr(
     root.attrs["collection_config_sha256"] = str((attrs or {}).get("collection_config_sha256", "unknown"))
     root.attrs["schema"] = "rl100-zarr-v1"
     if attrs:
-        requested_contract = attrs.get("contract")
-        if requested_contract is not None and str(requested_contract) != RL100_TOPIC_NATIVE_CONTRACT:
-            raise ValueError(
-                f"zarr contract must be {RL100_TOPIC_NATIVE_CONTRACT}, got {requested_contract!r}"
-            )
         for k, v in attrs.items():
+            if k in required_attrs or k in {"smooth_penalty", "collection_config_sha256"}:
+                continue
             root.attrs[k] = v
 
     try:
@@ -141,6 +158,7 @@ def write_rl100_zarr(
     _create(data, "timeout", timeout, chunks=(ZARR_CHUNK_LEAD, 1))
     _create(meta, "episode_ends", episode_ends)
 
+    root.attrs["audit_fields"] = []
     if buffers.audit:
         written_audit: list[str] = []
         skipped_audit: list[str] = []

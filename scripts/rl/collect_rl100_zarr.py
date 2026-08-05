@@ -113,13 +113,29 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         try:
             import rospy
             from kuavo_rl.rl100_zarr.ros_depth import DepthPointCloudHub
+            from kuavo_rl.rl100_zarr.ros_state import TopicStateHub
 
             if not rospy.core.is_initialized():
                 rospy.init_node("rl100_zarr_preflight", anonymous=True)
             hub = DepthPointCloudHub(cfg)
+            state_hub = TopicStateHub(
+                sensors_topic=cfg.sensors_topic,
+                dexhand_state_topic=cfg.dexhand_state_topic,
+            )
             hub.start()
-            out["ros_pointcloud"] = hub.preflight(timeout_s=float(args.timeout_s))
-            hub.close()
+            state_hub.start()
+            try:
+                out["ros_pointcloud"] = hub.preflight(timeout_s=float(args.timeout_s))
+                out["ros_state"] = state_hub.preflight(
+                    timeout_s=min(float(args.timeout_s), 10.0),
+                    profile_s=float(args.profile_s),
+                )
+            finally:
+                state_hub.close()
+                hub.close()
+            if not out["ros_pointcloud"].get("ok") or not out["ros_state"].get("ok"):
+                _print(out)
+                return 2
         except Exception as exc:  # noqa: BLE001
             out["ros_pointcloud"] = {"ok": False, "error": str(exc)}
             _print(out)
@@ -158,6 +174,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
             downsample_fps(rng.normal(size=(5000, 3)).astype(np.float32), NUM_POINTS)
             for _ in range(t)
         ]
+        cutoff = np.arange(t, dtype=np.float64) + 1.0
         save_episode_npz(
             ep_dir / f"smoke_{i}_{result}.npz",
             states=states,
@@ -165,6 +182,17 @@ def cmd_smoke(args: argparse.Namespace) -> int:
             point_clouds=pcs,
             result_type=result,
             meta={"smoke": True},
+            audit={
+                "sample_cutoff_received_at": cutoff,
+                "arm_command_received_at": cutoff.copy(),
+                "hand_command_received_at": cutoff.copy(),
+                "arm_command_seen": np.ones(t, dtype=bool),
+                "hand_command_seen": np.zeros(t, dtype=bool),
+                "arm_command_changed": np.r_[True, np.zeros(max(t - 1, 0), dtype=bool)],
+                "hand_command_changed": np.zeros(t, dtype=bool),
+                "arm_command_source": np.full(t, "topic"),
+                "hand_command_source": np.full(t, "default_hold"),
+            },
         )
 
     report = build_zarr_from_episode_dir(
@@ -212,32 +240,58 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     cfg = _load_cfg(args)
     path = Path(args.zarr_path) if args.zarr_path else cfg.zarr_path()
     root = zarr.open(str(path), mode="r")
+    if root.attrs.get("contract") != "rl100_topic_native_v1":
+        raise RuntimeError("zarr contract is not rl100_topic_native_v1")
+    if int(root.attrs.get("state_dim", -1)) != 32 or int(root.attrs.get("action_dim", -1)) != 26:
+        raise RuntimeError("zarr attrs must declare state_dim=32 and action_dim=26")
     data = root["data"]
     meta = root["meta"]
     states = np.asarray(data["state"][:], dtype=np.float32)
     actions = np.asarray(data["action"][:], dtype=np.float32)
+    episode_ends = np.asarray(meta["episode_ends"][:], dtype=np.int64)
+    if episode_ends.size == 0 or int(episode_ends[-1]) != len(states):
+        raise RuntimeError("zarr episode_ends does not cover all transitions")
     audit = {
         name: np.asarray(meta[name][:])
         for name in meta.array_keys()
         if name != "episode_ends"
     }
-    quality_errors = episode_action_quality_errors(
-        [row for row in states],
-        [row for row in actions],
-        require_gripper_motion=cfg.require_hand_motion,
-        min_gripper_action_range=cfg.min_hand_action_range,
-        audit=audit or None,
-    )
-    quality_report = episode_action_quality_report(
-        [row for row in states],
-        [row for row in actions],
-        audit=audit or None,
-    )
+    quality_errors: list[str] = []
+    episode_reports = []
+    start = 0
+    for episode_index, end_value in enumerate(episode_ends.tolist()):
+        end = int(end_value)
+        episode_audit = {
+            name: values[start:end]
+            for name, values in audit.items()
+        }
+        episode_errors = episode_action_quality_errors(
+            [row for row in states[start:end]],
+            [row for row in actions[start:end]],
+            require_gripper_motion=cfg.require_hand_motion,
+            min_gripper_action_range=cfg.min_hand_action_range,
+            audit=episode_audit or None,
+        )
+        quality_errors.extend([f"episode {episode_index}: {error}" for error in episode_errors])
+        if audit:
+            episode_reports.append(
+                episode_action_quality_report(
+                    [row for row in states[start:end]],
+                    [row for row in actions[start:end]],
+                    audit=episode_audit,
+                )
+            )
+        start = end
+    if not audit:
+        quality_errors.append(
+            "zarr has no per-frame audit arrays; rebuild from topic-native staging NPZs"
+        )
+    quality_report = {"episode_reports": episode_reports}
     out = {
         "path": str(path),
         "attrs": dict(root.attrs),
         "shapes": {k: list(data[k].shape) for k in data.array_keys()},
-        "episode_ends": np.asarray(meta["episode_ends"][:]).tolist(),
+        "episode_ends": episode_ends.tolist(),
         "n_transitions": int(data["action"].shape[0]),
         "reward_sum": float(np.asarray(data["reward"][:]).sum()),
         "action_quality": {
@@ -282,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--task")
     sp.add_argument("--check-ros", action="store_true")
     sp.add_argument("--timeout-s", type=float, default=5.0)
+    sp.add_argument("--profile-s", type=float, default=0.0, help="state topic rate profile duration")
     sp.set_defaults(func=cmd_preflight)
 
     ss = sub.add_parser("smoke", help="Synthetic episodes → zarr (no ROS)")

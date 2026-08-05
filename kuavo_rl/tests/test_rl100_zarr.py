@@ -17,7 +17,7 @@ from kuavo_rl.rl100_zarr.pointcloud import (
 )
 from kuavo_rl.rl100_zarr.reward import assign_episode_rewards, should_keep_episode
 from kuavo_rl.rl100_zarr.schema import NUM_POINTS, ZarrEpisodeBuffers
-from kuavo_rl.rl100_zarr.staging import build_zarr_from_episode_dir, save_episode_npz
+from kuavo_rl.rl100_zarr.staging import build_zarr_from_episode_dir, load_episode_npz, save_episode_npz
 from kuavo_rl.rl100_zarr.writer import write_rl100_zarr
 
 
@@ -248,3 +248,58 @@ def test_staging_build_only_success(tmp_path: Path):
     assert report["episodes_kept"] == 1
     assert report["episodes_skipped"] == 1
     assert report["n_episodes"] == 1
+
+
+def test_topic_native_audit_arrays_survive_npz_and_zarr(tmp_path: Path):
+    pytest.importorskip("zarr")
+    rng = np.random.default_rng(9)
+    t = 3
+    states = []
+    actions = []
+    pcs = []
+    for _ in range(t):
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        state[:20] = rng.normal(size=20)
+        state[20:] = 10.0
+        action = np.zeros(ACTION_DIM, dtype=np.float32)
+        action[:14] = rng.normal(size=14)
+        action[14:] = 10.0
+        states.append(state)
+        actions.append(action)
+        pcs.append(downsample_fps(rng.normal(size=(1000, 3)).astype(np.float32)))
+    audit = {
+        "sample_cutoff_received_at": np.array([1.0, 2.0, 3.0]),
+        "arm_command_received_at": np.array([1.0, 1.0, 2.5]),
+        "hand_command_received_at": np.array([1.0, 1.5, 1.5]),
+        "arm_command_seen": np.array([True, True, True]),
+        "hand_command_seen": np.array([False, False, True]),
+        "arm_command_changed": np.array([True, False, True]),
+        "hand_command_changed": np.array([False, True, False]),
+        "arm_command_source": np.array(["topic", "topic", "topic"]),
+        "hand_command_source": np.array(["default_hold", "default_hold", "topic"]),
+    }
+    ep_path = save_episode_npz(
+        tmp_path / "episode_success.npz",
+        states=states,
+        actions=actions,
+        point_clouds=pcs,
+        result_type="success",
+        audit=audit,
+    )
+    loaded = load_episode_npz(ep_path)
+    assert set(loaded["audit"]) == set(audit)
+    np.testing.assert_array_equal(loaded["audit"]["hand_command_seen"], audit["hand_command_seen"])
+    out = build_zarr_from_episode_dir(
+        tmp_path,
+        tmp_path / "audit.zarr",
+        overwrite=True,
+        smooth_penalty=0.0,
+        attrs={"contract": "rl100_topic_native_v1", "collection_config_sha256": "unit"},
+    )
+    assert out["transitions"] == t
+    import zarr
+
+    root = zarr.open(str(tmp_path / "audit.zarr"), mode="r")
+    assert "sample_cutoff_received_at" in root["meta"]
+    assert "hand_command_source" in root["meta"]
+    assert root.attrs["audit_fields"]
