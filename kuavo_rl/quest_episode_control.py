@@ -627,8 +627,13 @@ class QuestEpisodeControlEventSource:
             raise RuntimeError("QuestEpisodeControlEventSource requires rospy") from exc
         self._ros = rospy
         try:
-            from kuavo_msgs.msg import JoySticks
+            from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
 
+            ensure_foot_pose_6d_msgs()
+            try:
+                from kuavo_msgs.msg import JoySticks
+            except ImportError:
+                from kuavo_msgs.msg import questJoySticks as JoySticks
             self._joy_type = JoySticks
         except Exception:  # noqa: BLE001
             self._joy_type = None

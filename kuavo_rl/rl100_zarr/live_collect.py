@@ -301,12 +301,14 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     raw = load_yaml(env_config) if env_config.exists() else {"env": {}}
     env = None
     runner = None
+    # Needed for JoySticks even in raw_rosbag mode (teleop.start imports it).
+    from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
+
+    ensure_foot_pose_6d_msgs()
     if not raw_mode:
-        from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
         from kuavo_rl.act_runner import ActExecuteFirstRunner
         from kuavo_rl.adapter import make_kuavo_hilserl_env
 
-        ensure_foot_pose_6d_msgs()
         env_cfg = build_env_config_from_dict(raw)
         env_cfg.shadow_mode = bool(getattr(config, "shadow_mode", True))
         # Override short MVP episode limits — B ends episodes (same as HIL VR collect).

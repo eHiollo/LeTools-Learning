@@ -81,8 +81,18 @@ class RosTeleopAdapter(TeleopAdapter):
         try:
             import rospy
             from rospy.msg import AnyMsg
-            from kuavo_msgs.msg import JoySticks, robotHandPosition
             from sensor_msgs.msg import JointState
+
+            # Workspace kuavo_msgs often ships questJoySticks but not JoySticks;
+            # inject missing SDK msg classes (same MD5) before importing.
+            from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
+
+            ensure_foot_pose_6d_msgs()
+            try:
+                from kuavo_msgs.msg import JoySticks
+            except ImportError:
+                from kuavo_msgs.msg import questJoySticks as JoySticks
+            from kuavo_msgs.msg import robotHandPosition
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 "ROS teleop requires rospy, sensor_msgs and kuavo_msgs"
