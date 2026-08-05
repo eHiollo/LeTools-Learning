@@ -890,8 +890,13 @@ class RL100TopicRealRunner:
                 self._buffer_empty_ticks += 1
                 record["action_buffer_empty_ticks"] = self._buffer_empty_ticks
                 if scheduler_state.last_error and not scheduler_state.inference_running:
+                    error_code = (
+                        FaultCode.INFERENCE_TIMEOUT
+                        if "consumed the entire" in scheduler_state.last_error
+                        else FaultCode.ACTION_SHAPE
+                    )
                     return self._fault_result(
-                        FaultCode.ACTION_SHAPE,
+                        error_code,
                         scheduler_state.last_error,
                         record,
                         state_sample=state_sample,
