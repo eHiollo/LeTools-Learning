@@ -62,6 +62,70 @@ IMAGE_SHAPE_CHW = (3, 480, 848)
 
 DEFAULT_TASK_TEXT = "将物料框搬运到胸前的目标位置"
 
+# RL-100 topic-native contract.  Keep this separate from the legacy 16-D
+# HIL/ACT contract above: existing policies and generic environments depend on
+# ACTION_DIM/STATE_DIM remaining 16.
+RL100_TOPIC_NATIVE_CONTRACT = "rl100_topic_native_v1"
+RL100_STATE_DIM = 32
+RL100_ACTION_DIM = 26
+RL100_RAW_JOINT_DIM = 20
+RL100_DEXHAND_STATE_DIM = 12
+RL100_ARM_COMMAND_DIM = 14
+RL100_HAND_COMMAND_DIM = 12
+RL100_ARM_SLICE_RAW20 = slice(4, 18)
+RL100_ARM_JOINT_NAMES: tuple[str, ...] = tuple(f"arm_joint_{i}" for i in range(14))
+RL100_DEXHAND_JOINT_NAMES: tuple[str, ...] = (
+    "l_thumb",
+    "l_thumb_aux",
+    "l_index",
+    "l_middle",
+    "l_ring",
+    "l_pinky",
+    "r_thumb",
+    "r_thumb_aux",
+    "r_index",
+    "r_middle",
+    "r_ring",
+    "r_pinky",
+)
+RL100_HAND_DEFAULT = np.array(
+    [0, 99, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0], dtype=np.float32
+)
+
+
+def compose_rl100_topic_state(
+    raw_joint_q20: Sequence[float] | np.ndarray,
+    dexhand_position12: Sequence[float] | np.ndarray,
+) -> np.ndarray:
+    """Compose state32 without slicing/reordering either source topic."""
+    joints = np.asarray(raw_joint_q20, dtype=np.float32).reshape(-1)
+    hand = np.asarray(dexhand_position12, dtype=np.float32).reshape(-1)
+    if joints.shape != (RL100_RAW_JOINT_DIM,):
+        raise ValueError(f"raw joint_q expected {RL100_RAW_JOINT_DIM}-D, got {joints.shape}")
+    if hand.shape != (RL100_DEXHAND_STATE_DIM,):
+        raise ValueError(f"dexhand position expected {RL100_DEXHAND_STATE_DIM}-D, got {hand.shape}")
+    if not np.isfinite(joints).all() or not np.isfinite(hand).all():
+        raise ValueError("topic-native state contains NaN/Inf")
+    return np.concatenate([joints, hand]).astype(np.float32, copy=False)
+
+
+def compose_rl100_topic_action(
+    arm14_deg: Sequence[float] | np.ndarray,
+    hand12_raw: Sequence[float] | np.ndarray,
+) -> np.ndarray:
+    """Compose action26 in the exact command-topic field order."""
+    arm = np.asarray(arm14_deg, dtype=np.float32).reshape(-1)
+    hand = np.asarray(hand12_raw, dtype=np.float32).reshape(-1)
+    if arm.shape != (RL100_ARM_COMMAND_DIM,):
+        raise ValueError(f"arm command expected {RL100_ARM_COMMAND_DIM}-D, got {arm.shape}")
+    if hand.shape != (RL100_HAND_COMMAND_DIM,):
+        raise ValueError(f"hand command expected {RL100_HAND_COMMAND_DIM}-D, got {hand.shape}")
+    if not np.isfinite(arm).all() or not np.isfinite(hand).all():
+        raise ValueError("topic-native action contains NaN/Inf")
+    if np.any(hand < 0.0) or np.any(hand > 100.0):
+        raise ValueError("hand command must be within [0, 100]")
+    return np.concatenate([arm, hand]).astype(np.float32, copy=False)
+
 
 class FaultCode(str, Enum):
     NONE = "NONE"

@@ -6,9 +6,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import yaml
 
 from kuavo_rl.rl100_zarr.schema import ACTION_DIM, NUM_POINTS, STATE_DIM
+from kuavo_rl.contracts import (
+    RL100_ACTION_DIM,
+    RL100_ARM_COMMAND_DIM,
+    RL100_DEXHAND_STATE_DIM,
+    RL100_HAND_COMMAND_DIM,
+    RL100_HAND_DEFAULT,
+    RL100_RAW_JOINT_DIM,
+    RL100_STATE_DIM,
+    RL100_TOPIC_NATIVE_CONTRACT,
+)
 
 # Align with HIL real collect: B ends episodes; these are soft safety ceilings only.
 LIVE_SAFETY_MAX_STEPS = 100_000
@@ -65,6 +76,7 @@ def default_cameras() -> list[CameraPCConfig]:
 
 @dataclass
 class RL100CollectConfig:
+    contract: str = RL100_TOPIC_NATIVE_CONTRACT
     task: str = "box_to_chest_v1"
     output_root: str = "data/rl100"
     zarr_name: str = "demo.zarr"
@@ -74,8 +86,10 @@ class RL100CollectConfig:
     num_points: int = NUM_POINTS
     state_dim: int = STATE_DIM
     action_dim: int = ACTION_DIM
+    arm_command_dim: int = RL100_ARM_COMMAND_DIM
+    hand_command_dim: int = RL100_HAND_COMMAND_DIM
     lambda_penalty: float = 0.05
-    smooth_penalty: float = 0.01
+    smooth_penalty: float = 0.0
     max_episode_len: int = 2000
     base_frame: str = "base_link"
     workspace: dict[str, list[float]] = field(default_factory=dict)
@@ -83,14 +97,23 @@ class RL100CollectConfig:
     joystick_topic: str = "/quest_joystick_data"
     arm_traj_topic: str = "/kuavo_arm_traj"
     sensors_topic: str = "/sensors_data_raw"
+    dexhand_state_topic: str = "/dexhand/state"
     hand_command_topic: str = "/control_robot_hand_position"
-    hand_command_timeout_s: float = 0.20
-    qiangnao_scalar_index: int = 0
-    # RL-100 labels must be command targets, never a silent hold-state fallback.
-    require_command_action: bool = True
-    min_arm_action_state_delta_rad: float = 1e-4
-    require_gripper_motion: bool = False
-    min_gripper_action_range: float = 0.05
+    raw_joint_dim: int = RL100_RAW_JOINT_DIM
+    dexhand_state_dim: int = RL100_DEXHAND_STATE_DIM
+    hand_default: list[float] = field(default_factory=lambda: RL100_HAND_DEFAULT.tolist())
+    hand_default_tolerance: float = 2.0
+    start_on_any_command: bool = True
+    command_hold_last: bool = True
+    command_timeout_s: float | None = None
+    joint_state_max_age_s: float = 0.15
+    dexhand_state_max_age_s: float = 0.15
+    state_max_skew_s: float = 0.10
+    depth_max_age_s: float = 0.15
+    camera_max_skew_s: float = 0.10
+    max_consecutive_source_failures: int = 3
+    require_hand_motion: bool = False
+    min_hand_action_range: float = 5.0
     confirm_live: bool = False
     shadow_mode: bool = True
     # Real-robot HIL collect wiring (same as hil_collection_real_v001).
@@ -111,12 +134,51 @@ class RL100CollectConfig:
     reward_stick_threshold: float = 0.80
     reward_stick_rearm_threshold: float = 0.20
     reward_stick_debounce_s: float = 0.25
+    config_path: str | None = None
 
     def output_dir(self) -> Path:
         return Path(self.output_root) / self.task
 
     def zarr_path(self) -> Path:
         return self.output_dir() / self.zarr_name
+
+    def validate_contract(self) -> None:
+        if self.contract != RL100_TOPIC_NATIVE_CONTRACT:
+            raise ValueError(f"RL-100 collection requires contract={RL100_TOPIC_NATIVE_CONTRACT}")
+        if self.state_dim != STATE_DIM or self.action_dim != ACTION_DIM:
+            raise ValueError(f"RL-100 topic-native collection requires state/action {STATE_DIM}/{ACTION_DIM}")
+        if self.state_dim != RL100_STATE_DIM or self.action_dim != RL100_ACTION_DIM:
+            raise ValueError("RL-100 topic-native collection requires state/action 32/26")
+        if self.arm_command_dim != RL100_ARM_COMMAND_DIM or self.hand_command_dim != RL100_HAND_COMMAND_DIM:
+            raise ValueError("RL-100 command dimensions must be arm14/hand12")
+        if float(self.smooth_penalty) != 0.0:
+            raise ValueError("topic-native RL-100 requires smooth_penalty=0.0 until unit scales are configured")
+        if self.raw_joint_dim != RL100_RAW_JOINT_DIM or self.dexhand_state_dim != RL100_DEXHAND_STATE_DIM:
+            raise ValueError("RL-100 raw joint/hand state dimensions must be 20/12")
+        if len(self.hand_default) != RL100_HAND_COMMAND_DIM:
+            raise ValueError("hand_default must contain 12 values")
+        hand_default = np.asarray(self.hand_default, dtype=np.float32)
+        if not np.isfinite(hand_default).all():
+            raise ValueError("hand_default contains NaN/Inf")
+        if np.any(hand_default < 0) or np.any(hand_default > 100):
+            raise ValueError("hand_default must be in [0,100]")
+        if not np.array_equal(hand_default, RL100_HAND_DEFAULT):
+            raise ValueError(
+                "hand_default must remain the fixed topic-native pre-hand-command hold "
+                f"{RL100_HAND_DEFAULT.tolist()}"
+            )
+        for name in (
+            "hand_default_tolerance",
+            "joint_state_max_age_s",
+            "dexhand_state_max_age_s",
+            "state_max_skew_s",
+            "depth_max_age_s",
+            "camera_max_skew_s",
+        ):
+            if float(getattr(self, name)) <= 0.0:
+                raise ValueError(f"{name} must be positive")
+        if int(self.max_consecutive_source_failures) < 1:
+            raise ValueError("max_consecutive_source_failures must be >= 1")
 
     def workspace_ranges(
         self,
@@ -156,7 +218,8 @@ class RL100CollectConfig:
                 )
                 for c in cams_raw
             ]
-        return cls(
+        config = cls(
+            contract=str(raw.get("contract", RL100_TOPIC_NATIVE_CONTRACT)),
             task=str(raw.get("task", "box_to_chest_v1")),
             output_root=str(raw.get("output_root", "data/rl100")),
             zarr_name=str(raw.get("zarr_name", "demo.zarr")),
@@ -166,8 +229,10 @@ class RL100CollectConfig:
             num_points=int(raw.get("num_points", NUM_POINTS)),
             state_dim=int(raw.get("state_dim", STATE_DIM)),
             action_dim=int(raw.get("action_dim", ACTION_DIM)),
+            arm_command_dim=int(raw.get("arm_command_dim", RL100_ARM_COMMAND_DIM)),
+            hand_command_dim=int(raw.get("hand_command_dim", RL100_HAND_COMMAND_DIM)),
             lambda_penalty=float(raw.get("lambda_penalty", 0.05)),
-            smooth_penalty=float(raw.get("smooth_penalty", 0.01)),
+            smooth_penalty=float(raw.get("smooth_penalty", 0.0)),
             max_episode_len=int(raw.get("max_episode_len", 2000)),
             base_frame=str(raw.get("base_frame", "base_link")),
             workspace=dict(raw.get("workspace") or {}),
@@ -175,19 +240,28 @@ class RL100CollectConfig:
             joystick_topic=str(raw.get("joystick_topic", "/quest_joystick_data")),
             arm_traj_topic=str(raw.get("arm_traj_topic", "/kuavo_arm_traj")),
             sensors_topic=str(raw.get("sensors_topic", "/sensors_data_raw")),
+            dexhand_state_topic=str(raw.get("dexhand_state_topic", "/dexhand/state")),
             hand_command_topic=str(
                 raw.get("hand_command_topic", "/control_robot_hand_position")
             ),
-            hand_command_timeout_s=float(raw.get("hand_command_timeout_s", 0.20)),
-            qiangnao_scalar_index=int(raw.get("qiangnao_scalar_index", 0)),
-            require_command_action=bool(raw.get("require_command_action", True)),
-            min_arm_action_state_delta_rad=float(
-                raw.get("min_arm_action_state_delta_rad", 1e-4)
+            raw_joint_dim=int(raw.get("raw_joint_dim", RL100_RAW_JOINT_DIM)),
+            dexhand_state_dim=int(raw.get("dexhand_state_dim", RL100_DEXHAND_STATE_DIM)),
+            hand_default=list(raw.get("hand_default", RL100_HAND_DEFAULT.tolist())),
+            hand_default_tolerance=float(raw.get("hand_default_tolerance", 2.0)),
+            start_on_any_command=bool(raw.get("start_on_any_command", True)),
+            command_hold_last=bool(raw.get("command_hold_last", True)),
+            command_timeout_s=(
+                None if raw.get("command_timeout_s", None) is None
+                else float(raw.get("command_timeout_s"))
             ),
-            require_gripper_motion=bool(raw.get("require_gripper_motion", False)),
-            min_gripper_action_range=float(
-                raw.get("min_gripper_action_range", 0.05)
-            ),
+            joint_state_max_age_s=float(raw.get("joint_state_max_age_s", 0.15)),
+            dexhand_state_max_age_s=float(raw.get("dexhand_state_max_age_s", 0.15)),
+            state_max_skew_s=float(raw.get("state_max_skew_s", 0.10)),
+            depth_max_age_s=float(raw.get("depth_max_age_s", 0.15)),
+            camera_max_skew_s=float(raw.get("camera_max_skew_s", 0.10)),
+            max_consecutive_source_failures=int(raw.get("max_consecutive_source_failures", 3)),
+            require_hand_motion=bool(raw.get("require_hand_motion", raw.get("require_gripper_motion", False))),
+            min_hand_action_range=float(raw.get("min_hand_action_range", raw.get("min_gripper_action_range", 5.0))),
             confirm_live=bool(raw.get("confirm_live", False)),
             shadow_mode=bool(raw.get("shadow_mode", True)),
             deploy_config=str(
@@ -205,7 +279,13 @@ class RL100CollectConfig:
             ),
             episode_control=str(raw.get("episode_control", "quest_y_button")),
             chord_long_press_s=float(raw.get("chord_long_press_s", 0.8)),
+            reward_gesture=str(raw.get("reward_gesture", "button")),
+            reward_stick_threshold=float(raw.get("reward_stick_threshold", 0.80)),
+            reward_stick_rearm_threshold=float(raw.get("reward_stick_rearm_threshold", 0.20)),
+            reward_stick_debounce_s=float(raw.get("reward_stick_debounce_s", 0.25)),
         )
+        config.validate_contract()
+        return config
 
 
 def load_rl100_collect_config(path: str | Path | None = None) -> RL100CollectConfig:

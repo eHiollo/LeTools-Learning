@@ -16,7 +16,9 @@ import numpy as np
 
 from kuavo_rl.rl100_zarr.config import RL100CollectConfig
 from kuavo_rl.rl100_zarr.ros_depth import DepthPointCloudHub
+from kuavo_rl.rl100_zarr.ros_state import TopicStateHub
 from kuavo_rl.rl100_zarr.staging import save_episode_npz
+from kuavo_rl.contracts import RL100_ACTION_DIM, RL100_ARM_SLICE_RAW20, RL100_STATE_DIM
 
 
 _SEP = "===================================================="
@@ -49,41 +51,145 @@ def episode_action_quality_errors(
     states: list[np.ndarray],
     actions: list[np.ndarray],
     *,
-    min_arm_action_state_delta_rad: float,
-    require_gripper_motion: bool,
-    min_gripper_action_range: float,
+    min_arm_action_state_delta_rad: float = 0.0,
+    require_gripper_motion: bool = False,
+    min_gripper_action_range: float = 0.0,
+    audit: dict[str, np.ndarray] | None = None,
 ) -> list[str]:
     """Reject invalid demonstration labels before writing an episode."""
     if not states or len(states) != len(actions):
         return [f"state/action length mismatch: {len(states)} != {len(actions)}"]
     state = np.stack(states).astype(np.float32)
     action = np.stack(actions).astype(np.float32)
-    if state.shape[1:] != (16,) or action.shape[1:] != (16,):
-        return [f"expected state/action (*,16), got {state.shape}/{action.shape}"]
+    if state.shape[1:] != (RL100_STATE_DIM,) or action.shape[1:] != (RL100_ACTION_DIM,):
+        return [
+            f"expected state/action (*,{RL100_STATE_DIM})/(*,{RL100_ACTION_DIM}), "
+            f"got {state.shape}/{action.shape}"
+        ]
     if not np.all(np.isfinite(state)) or not np.all(np.isfinite(action)):
         return ["state/action contains NaN or Inf"]
 
     errors: list[str] = []
-    arm_idx = np.asarray([*range(7), *range(8, 15)], dtype=np.int64)
-    arm_delta = float(np.max(np.abs(action[:, arm_idx] - state[:, arm_idx])))
-    if arm_delta < float(min_arm_action_state_delta_rad):
+    if np.any(state[:, 20:] < 0.0) or np.any(state[:, 20:] > 100.0):
+        errors.append("dexhand state outside [0,100]")
+    arm_deg = action[:, :14]
+    hand = action[:, 14:]
+    if np.any(hand < 0.0) or np.any(hand > 100.0):
         errors.append(
-            "arm action is indistinguishable from measured state "
-            f"(max |action-state|={arm_delta:.6g} rad)"
+            f"hand action outside [0,100] (min={hand.min():.6g}, max={hand.max():.6g})"
         )
-
-    grip = action[:, [7, 15]]
-    if np.any(grip < 0.0) or np.any(grip > 1.0):
+    hand_range = np.ptp(hand, axis=0)
+    if require_gripper_motion and float(np.max(hand_range)) < float(min_gripper_action_range):
         errors.append(
-            f"gripper action outside [0,1] (min={grip.min():.6g}, max={grip.max():.6g})"
+            "no effective hand command motion "
+            f"(max per-finger range={np.max(hand_range):.6g})"
         )
-    grip_range = np.ptp(grip, axis=0)
-    if require_gripper_motion and float(np.max(grip_range)) < float(min_gripper_action_range):
-        errors.append(
-            "no effective gripper command motion "
-            f"(left range={grip_range[0]:.6g}, right range={grip_range[1]:.6g})"
-        )
+    if not np.isfinite(arm_deg).all():
+        errors.append("arm command contains NaN/Inf")
+    if audit is not None:
+        arm_seen = np.asarray(audit.get("arm_command_seen", []), dtype=bool)
+        hand_seen = np.asarray(audit.get("hand_command_seen", []), dtype=bool)
+        if not (arm_seen.shape == hand_seen.shape == (len(actions),)):
+            errors.append("command seen audit shape mismatch")
+        elif not bool(arm_seen[0] or hand_seen[0]) or not np.any(arm_seen | hand_seen):
+            errors.append("first sample has no valid arm/hand command after record start")
+        cutoff = np.asarray(audit.get("sample_cutoff_received_at", []), dtype=np.float64)
+        arm_received = np.asarray(audit.get("arm_command_received_at", []), dtype=np.float64)
+        hand_received = np.asarray(audit.get("hand_command_received_at", []), dtype=np.float64)
+        if cutoff.shape == arm_received.shape == hand_received.shape == (len(actions),):
+            if (
+                not np.isfinite(cutoff).all()
+                or not np.isfinite(arm_received).all()
+                or not np.isfinite(hand_received).all()
+            ):
+                errors.append("command timing audit contains NaN/Inf")
+            elif np.any(arm_received > cutoff) or np.any(hand_received > cutoff):
+                errors.append("command causality violation: received_at > sample cutoff")
+            if np.any(np.diff(arm_received) < 0.0) or np.any(np.diff(hand_received) < 0.0):
+                errors.append("command received_at is not monotonic")
+        else:
+            errors.append("command timing audit shape mismatch")
+        for key in ("arm_command_stamp", "hand_command_stamp"):
+            stamps = np.asarray(audit.get(key, []), dtype=np.float64)
+            if stamps.shape == (len(actions),):
+                valid = stamps > 0.0
+                if valid.sum() > 1 and np.any(np.diff(stamps[valid]) < -1e-6):
+                    errors.append(f"{key} is not monotonic for valid header stamps")
     return errors
+
+
+def _summary_stats(values: np.ndarray) -> dict[str, float | None]:
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return {"p50": None, "p95": None, "p99": None, "max": None}
+    return {
+        "p50": float(np.quantile(arr, 0.50)),
+        "p95": float(np.quantile(arr, 0.95)),
+        "p99": float(np.quantile(arr, 0.99)),
+        "max": float(np.max(arr)),
+    }
+
+
+def episode_action_quality_report(
+    states: list[np.ndarray],
+    actions: list[np.ndarray],
+    *,
+    audit: dict[str, np.ndarray] | None = None,
+) -> dict[str, Any]:
+    """Return inspectable ranges and timing ratios for one topic-native episode."""
+    state = np.stack(states).astype(np.float32)
+    action = np.stack(actions).astype(np.float32)
+    report: dict[str, Any] = {
+        "state_shape": list(state.shape),
+        "action_shape": list(action.shape),
+        "state_joint20": {
+            "min": state[:, :20].min(axis=0).tolist(),
+            "max": state[:, :20].max(axis=0).tolist(),
+        },
+        "state_hand12": {
+            "min": state[:, 20:].min(axis=0).tolist(),
+            "max": state[:, 20:].max(axis=0).tolist(),
+            "range": np.ptp(state[:, 20:], axis=0).tolist(),
+        },
+        "action_arm14_deg": {
+            "min": action[:, :14].min(axis=0).tolist(),
+            "max": action[:, :14].max(axis=0).tolist(),
+            "range": np.ptp(action[:, :14], axis=0).tolist(),
+        },
+        "action_hand12_raw": {
+            "min": action[:, 14:].min(axis=0).tolist(),
+            "max": action[:, 14:].max(axis=0).tolist(),
+            "range": np.ptp(action[:, 14:], axis=0).tolist(),
+        },
+    }
+    if audit is not None:
+        arm_changed = np.asarray(audit.get("arm_command_changed", []), dtype=bool)
+        hand_changed = np.asarray(audit.get("hand_command_changed", []), dtype=bool)
+        report["arm_command_changed_ratio"] = float(arm_changed.mean()) if arm_changed.size else None
+        report["hand_command_changed_ratio"] = float(hand_changed.mean()) if hand_changed.size else None
+        report["initial_command_source"] = {
+            "arm": str(np.asarray(audit.get("arm_command_source", ["unknown"]), dtype=object)[0]),
+            "hand": str(np.asarray(audit.get("hand_command_source", ["unknown"]), dtype=object)[0]),
+        }
+        for key, out_key in (
+            ("joint_age", "joint_age_s"),
+            ("hand_age", "hand_age_s"),
+            ("joint_hand_skew", "joint_hand_skew_s"),
+        ):
+            report[out_key] = _summary_stats(np.asarray(audit.get(key, []), dtype=np.float64))
+        cutoff = np.asarray(audit.get("sample_cutoff_received_at", []), dtype=np.float64)
+        arm_received = np.asarray(audit.get("arm_command_received_at", []), dtype=np.float64)
+        hand_received = np.asarray(audit.get("hand_command_received_at", []), dtype=np.float64)
+        if cutoff.shape == arm_received.shape == hand_received.shape and cutoff.size:
+            hold_age = np.maximum(cutoff - np.maximum(arm_received, hand_received), 0.0)
+            report["command_hold_duration_s"] = _summary_stats(hold_age)
+            report["causality_violation_count"] = int(
+                np.count_nonzero((arm_received > cutoff) | (hand_received > cutoff))
+            )
+        else:
+            report["command_hold_duration_s"] = _summary_stats(np.asarray([], dtype=np.float64))
+            report["causality_violation_count"] = None
+    return report
 
 
 class HoldStatePolicy:
@@ -130,6 +236,7 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
 
     ensure_foot_pose_6d_msgs()
 
+    config.validate_contract()
     if not config.confirm_live:
         raise RuntimeError(
             "refusing live motion without confirm_live=true / --confirm-live"
@@ -190,10 +297,10 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     # RL-100 collection records the actual Quest/IK command streams. This is
     # intentionally scoped here rather than changing generic HIL intervention.
     allowed["hand_command_topic"] = config.hand_command_topic
-    allowed["hand_command_timeout_s"] = config.hand_command_timeout_s
-    allowed["qiangnao_scalar_index"] = config.qiangnao_scalar_index
     allowed["record_all_arm_commands"] = True
-    allowed["require_hand_command"] = True
+    # Arm and hand command streams are independent.  An arm-only phase must
+    # still be recordable before the first hand command arrives.
+    allowed["require_hand_command"] = False
     # JoySticks field name — not the UI letter "B".
     allowed.setdefault("reward_button", "right_second_button_pressed")
     allowed.setdefault("reward_gesture", config.reward_gesture)
@@ -225,11 +332,25 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         env.close()
         raise RuntimeError(f"depth/tf preflight failed: {pf}")
 
+    state_hub = TopicStateHub(
+        sensors_topic=config.sensors_topic,
+        dexhand_state_topic=config.dexhand_state_topic,
+    )
+    state_hub.start()
+    state_pf = state_hub.preflight(timeout_s=8.0)
+    _say(f"raw state preflight: {state_pf}")
+    if not state_pf.get("ok"):
+        state_hub.close()
+        pc_hub.close()
+        teleop.close()
+        env.close()
+        raise RuntimeError(f"raw state preflight failed: {state_pf}")
+
     # /kuavo_arm_traj and /control_robot_hand_position are demand-driven:
     # they only publish while the operator is actively teleoping. A hard
     # preflight would block collection before any motion occurs. Treat as
-    # a soft warning; the per-step require_command_action gate still
-    # discards episodes that never receive a command stream.
+    # a soft warning; the per-step any-command gate still discards episodes
+    # that never receive a command stream.
     command_pf = teleop.command_stream_status()
     _say(f"command-stream preflight: {command_pf}")
     if not command_pf["ok"]:
@@ -328,6 +449,7 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
                 teleop=teleop,
                 event_src=event_src,
                 pc_hub=pc_hub,
+                state_hub=state_hub,
                 config=config,
                 episode_dir=episode_dir,
                 attempt=attempt,
@@ -370,6 +492,7 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     finally:
         if event_src is not None:
             event_src.close()
+        state_hub.close()
         pc_hub.close()
         teleop.close()
         env.close()
@@ -438,20 +561,41 @@ def _record_one_episode(
     pc_hub: DepthPointCloudHub,
     config: RL100CollectConfig,
     episode_dir: Path,
+    state_hub: TopicStateHub,
     attempt: int = 1,
 ) -> LiveEpisodeResult:
-    """Record state + point cloud every frame. Action = next_state.
-
-    Does NOT depend on /kuavo_arm_traj or /control_robot_hand_command — those
-    are demand-driven and only publish while the operator actively controls.
-    Instead:
-      - state is recorded every frame (always available from /sensors_data_raw)
-      - action[t] = state[t+1]  (absolute joint target = next frame's state)
-      - last frame action = state[-1]  (hold)
-    """
+    """Record raw state32 and command-cache action26 at a common sample cutoff."""
     eid = uuid.uuid4().hex[:12]
     states: list[np.ndarray] = []
+    actions: list[np.ndarray] = []
     pcs: list[np.ndarray] = []
+    audit: dict[str, list[Any]] = {
+        "sample_stamp": [],
+        "sample_cutoff_received_at": [],
+        "joint_state_stamp": [],
+        "dexhand_state_stamp": [],
+        "arm_command_stamp": [],
+        "hand_command_stamp": [],
+        "joint_state_received_at": [],
+        "dexhand_state_received_at": [],
+        "arm_command_received_at": [],
+        "hand_command_received_at": [],
+        "joint_sensor_time": [],
+        "joint_hand_skew": [],
+        "joint_age": [],
+        "hand_age": [],
+        "point_cloud_stamp": [],
+        "point_cloud_received_at": [],
+        "point_cloud_age": [],
+        "point_cloud_camera_skew": [],
+        "point_cloud_valid_points": [],
+        "arm_command_changed": [],
+        "hand_command_changed": [],
+        "arm_command_seen": [],
+        "hand_command_seen": [],
+        "arm_command_source": [],
+        "hand_command_source": [],
+    }
     result_type = "abort"
     stop_reason = "unknown"
     tag = f"[RECORD #{attempt}]"
@@ -466,73 +610,146 @@ def _record_one_episode(
     else:
         _say("         B short=success  |  B long=failure  |  Y double=rerecord")
 
+    try:
+        initial = state_hub.snapshot(
+            config.joint_state_max_age_s,
+            config.dexhand_state_max_age_s,
+            config.state_max_skew_s,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _say(f"{tag}  raw state unavailable at record start: {exc}")
+        return LiveEpisodeResult("discarded", eid, 0, result_type, None, "state_preflight")
+
+    default_hand = np.asarray(config.hand_default, dtype=np.float32)
+    default_error = float(np.max(np.abs(initial.dexhand_position12 - default_hand)))
+    if default_error > float(config.hand_default_tolerance):
+        _say(
+            f"{tag}  hand is not at configured default: max error={default_error:.3f} "
+            f"> tolerance={config.hand_default_tolerance:.3f}; restore hand and retry"
+        )
+        return LiveEpisodeResult("discarded", eid, 0, result_type, None, "hand_default_mismatch")
+    teleop.begin_topic_native_episode(initial.raw_joint_q20[RL100_ARM_SLICE_RAW20])
+
     dt = 1.0 / max(config.fps, 1.0)
     t0 = time.monotonic()
     max_steps = max(int(config.live_max_steps), 1)
     max_duration_s = float(config.live_max_duration_s)
+    source_failures = 0
 
-    while True:
-        if len(states) >= max_steps:
-            result_type, stop_reason = "abort", "max_steps"
-            break
-        if (time.monotonic() - t0) >= max_duration_s:
-            result_type, stop_reason = "abort", "max_duration"
-            break
+    try:
+        while True:
+            if len(states) >= max_steps:
+                result_type, stop_reason = "abort", "max_steps"
+                break
+            if (time.monotonic() - t0) >= max_duration_s:
+                result_type, stop_reason = "abort", "max_duration"
+                break
 
-        ev = event_src.poll() if event_src is not None else None
-        et = getattr(ev, "event_type", None) if ev is not None else None
-        if et == "right_stick_left":
-            result_type, stop_reason = "abort", "rerecord"
-            _say(f"{tag}  Y double-click → rerecord (discard)")
-            break
-        if et == "right_stick_right":
-            _say(f"{tag}  Y click ignored — end with B (short=success, long=failure)")
-        elif et in {"right_stick_down", "collection_complete"}:
-            _say(f"{tag}  Y long ignored — end with B first, then Y long in RESET")
+            ev = event_src.poll() if event_src is not None else None
+            et = getattr(ev, "event_type", None) if ev is not None else None
+            if et == "right_stick_left":
+                result_type, stop_reason = "abort", "rerecord"
+                _say(f"{tag}  Y double-click → rerecord (discard)")
+                break
+            if et == "right_stick_right":
+                _say(f"{tag}  Y click ignored — end with B (short=success, long=failure)")
+            elif et in {"right_stick_down", "collection_complete"}:
+                _say(f"{tag}  Y long ignored — end with B first, then Y long in RESET")
 
-        try:
-            pc = pc_hub.get_point_cloud()
-        except Exception as exc:  # noqa: BLE001
-            _say(f"{tag}  pointcloud failed: {exc}")
-            result_type, stop_reason = "abort", "pointcloud_error"
-            break
+            cutoff = time.monotonic()
+            try:
+                command = teleop.topic_native_snapshot(cutoff)
+            except Exception as exc:  # noqa: BLE001
+                _say(f"{tag}  command cache failed: {exc}")
+                result_type, stop_reason = "abort", "command_cache_error"
+                break
 
-        # Record state every frame. env.step still polls teleop for B labels.
-        # Gripper: /dexhand/state sensor readings are unreliable (sparse/low-rate),
-        # so overwrite state[7] & state[15] with the operator's hand command
-        # (/control_robot_hand_position), hold-last across demand-driven gaps.
-        state_t = np.asarray(obs["observation.state"], dtype=np.float32).copy()
-        grip_l, grip_r = teleop.last_gripper_command()
-        state_t[7] = grip_l
-        state_t[15] = grip_r
-        hold = np.asarray(runner.select_action(obs).action, dtype=np.float32)
-        obs, _, term, trunc, info = env.step(hold)
-        teleop.set_reference_action(obs["observation.state"])
+            has_command = bool(command.arm_seen or command.hand_seen)
+            state_sample = None
+            cloud_sample = None
+            if has_command or not config.start_on_any_command:
+                try:
+                    state_sample = state_hub.snapshot(
+                        config.joint_state_max_age_s,
+                        config.dexhand_state_max_age_s,
+                        config.state_max_skew_s,
+                    )
+                    cloud_sample = pc_hub.get_point_cloud_sample(
+                        max_depth_age_s=config.depth_max_age_s,
+                        max_camera_skew_s=config.camera_max_skew_s,
+                    )
+                    source_failures = 0
+                except Exception as exc:  # noqa: BLE001
+                    source_failures += 1
+                    if source_failures >= config.max_consecutive_source_failures:
+                        _say(f"{tag}  source failed {source_failures} times: {exc}")
+                        result_type, stop_reason = "abort", "source_error"
+                        break
+                    _say(
+                        f"{tag}  source frame skipped ({source_failures}/"
+                        f"{config.max_consecutive_source_failures}): {exc}"
+                    )
+                    # Still run one env step so B/Y labels remain responsive;
+                    # no state/action sample is appended for this stale frame.
+                    state_sample = None
+                    cloud_sample = None
 
-        # Check B label from env step's teleop poll.
-        labeled = _label_from_teleop_info(info)
+            # env.step still polls teleop for B labels, but its 16-D hold action
+            # is unrelated to the RL-100 dataset action.
+            hold = np.asarray(runner.select_action(obs).action, dtype=np.float32)
+            obs, _, term, trunc, info = env.step(hold)
+            teleop.set_reference_action(obs["observation.state"])
+            labeled = _label_from_teleop_info(info)
 
-        states.append(state_t)
-        pcs.append(pc.copy())
+            if has_command and state_sample is not None and cloud_sample is not None:
+                states.append(state_sample.state32.copy())
+                actions.append(command.action26.copy())
+                pcs.append(cloud_sample.points.copy())
+                audit["sample_stamp"].append(time.time())
+                audit["sample_cutoff_received_at"].append(cutoff)
+                audit["joint_state_stamp"].append(state_sample.joint_stamp_s)
+                audit["dexhand_state_stamp"].append(state_sample.hand_stamp_s)
+                audit["arm_command_stamp"].append(command.arm_header_stamp_s)
+                audit["hand_command_stamp"].append(command.hand_header_stamp_s)
+                audit["joint_state_received_at"].append(state_sample.joint_received_at_s)
+                audit["dexhand_state_received_at"].append(state_sample.hand_received_at_s)
+                audit["arm_command_received_at"].append(command.arm_received_at_s)
+                audit["hand_command_received_at"].append(command.hand_received_at_s)
+                audit["joint_sensor_time"].append(state_sample.joint_sensor_time_s)
+                audit["joint_hand_skew"].append(state_sample.joint_hand_skew_s)
+                audit["joint_age"].append(state_sample.joint_age_s)
+                audit["hand_age"].append(state_sample.hand_age_s)
+                audit["point_cloud_stamp"].append(cloud_sample.fused_stamp_s)
+                audit["point_cloud_received_at"].append(cloud_sample.received_at_s)
+                audit["point_cloud_age"].append(cloud_sample.oldest_age_s)
+                audit["point_cloud_camera_skew"].append(cloud_sample.max_camera_skew_s)
+                audit["point_cloud_valid_points"].append(cloud_sample.valid_points)
+                audit["arm_command_changed"].append(command.arm_changed)
+                audit["hand_command_changed"].append(command.hand_changed)
+                audit["arm_command_seen"].append(command.arm_seen)
+                audit["hand_command_seen"].append(command.hand_seen)
+                audit["arm_command_source"].append(command.arm_source)
+                audit["hand_command_source"].append(command.hand_source)
 
-        if labeled is not None:
-            result_type, stop_reason = labeled
-            _say(f"{tag}  B → {result_type} — ending episode")
-            break
-
-        if term or trunc:
-            stop_reason = str(info.get("fault_code", "env_terminate"))
-            result_type = "abort"
-            _say(
-                f"{tag}  env stop at step {len(states)} "
-                f"(fault={stop_reason}, source={info.get('reward_source')}) — discard"
-            )
-            break
-        time.sleep(dt)
+            if labeled is not None:
+                result_type, stop_reason = labeled
+                _say(f"{tag}  B → {result_type} — ending episode")
+                break
+            if term or trunc:
+                stop_reason = str(info.get("fault_code", "env_terminate"))
+                result_type = "abort"
+                _say(
+                    f"{tag}  env stop at step {len(states)} "
+                    f"(fault={stop_reason}, source={info.get('reward_source')}) — discard"
+                )
+                break
+            time.sleep(dt)
+    finally:
+        teleop.end_topic_native_episode()
 
     # Only discard on explicit rerecord or empty episodes. Everything else
     # (B success, B failure, env terminate, etc.) is kept.
-    if stop_reason == "rerecord" or len(states) < 2:
+    if stop_reason == "rerecord" or len(states) == 0:
         return LiveEpisodeResult(
             status="discarded",
             episode_id=eid,
@@ -542,16 +759,24 @@ def _record_one_episode(
             stop_reason=stop_reason,
         )
 
-    # action[t] = state[t+1]  (absolute joint target = next frame's state)
-    state_arr = np.stack(states, axis=0)
-    actions = np.zeros_like(state_arr)
-    actions[:-1] = state_arr[1:]
-    actions[-1] = state_arr[-1]  # last frame: hold
+    audit_arrays = {key: np.asarray(values) for key, values in audit.items()}
+    quality_errors = episode_action_quality_errors(
+        states,
+        actions,
+        require_gripper_motion=config.require_hand_motion,
+        min_gripper_action_range=config.min_hand_action_range,
+        audit=audit_arrays,
+    )
+    if quality_errors:
+        _say(f"{tag}  quality gate rejected episode: {quality_errors}")
+        return LiveEpisodeResult(
+            "discarded", eid, len(states), result_type, None, "quality_gate"
+        )
 
     path = save_episode_npz(
         episode_dir / f"{eid}_{result_type}.npz",
         states=states,
-        actions=[actions[i] for i in range(len(actions))],
+        actions=actions,
         point_clouds=pcs,
         result_type=result_type,
         meta={
@@ -559,8 +784,14 @@ def _record_one_episode(
             "task": config.task,
             "deploy_config": config.deploy_config,
             "env_config": config.env_config,
-            "action_source": "next_state",
+            "action_source": "topic_command_cache",
+            "contract": config.contract,
+            "state_dim": config.state_dim,
+            "action_dim": config.action_dim,
+            "state_order": "raw_joint_q20 + dexhand_position12",
+            "action_order": "arm14_deg + left_hand6_raw + right_hand6_raw",
         },
+        audit=audit_arrays,
     )
     return LiveEpisodeResult(
         status="saved",

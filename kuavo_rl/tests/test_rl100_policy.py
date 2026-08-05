@@ -13,14 +13,14 @@ def _shape_meta():
     return {
         "obs": {
             "point_cloud": {"shape": [1024, 3]},
-            "agent_pos": {"shape": [16]},
+            "agent_pos": {"shape": [32]},
         },
-        "action": {"shape": [16]},
+        "action": {"shape": [26]},
     }
 
 
 def test_validate_real_robot_shape_meta():
-    assert validate_shape_meta(_shape_meta()) == (1024, 3, 16, 16)
+    assert validate_shape_meta(_shape_meta()) == (1024, 3, 32, 26)
     bad = _shape_meta()
     bad["obs"]["agent_pos"]["shape"] = [14]
     with pytest.raises(ValueError, match="agent_pos"):

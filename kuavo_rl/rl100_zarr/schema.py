@@ -1,12 +1,12 @@
-"""RL-100 zarr schema aligned with Kuavo 16-D joint contracts.
+"""RL-100 topic-native zarr schema.
 
 Disk layout (matches RL-100 ``data_prepare.write_zarr`` / FoldingDataset)::
 
     <task>.zarr/
       data/
         point_cloud, next_point_cloud   (T, 1024, 3) float32
-        state, next_state               (T, 16) float32   # training maps to agent_pos
-        action, next_action             (T, 16) float32
+        state, next_state               (T, 32) float32   # training maps to agent_pos
+        action, next_action             (T, 26) float32
         reward, return                  (T, 1) float32
         done, timeout                   (T, 1) bool
       meta/
@@ -16,11 +16,14 @@ Disk layout (matches RL-100 ``data_prepare.write_zarr`` / FoldingDataset)::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
-from kuavo_rl.contracts import ACTION_DIM, STATE_DIM
+from kuavo_rl.contracts import RL100_ACTION_DIM, RL100_STATE_DIM
+
+STATE_DIM = RL100_STATE_DIM
+ACTION_DIM = RL100_ACTION_DIM
 
 NUM_POINTS = 1024
 POINT_DIM = 3
@@ -55,6 +58,8 @@ class ZarrEpisodeBuffers:
     timeout: list[bool] = field(default_factory=list)
     episode_ends: list[int] = field(default_factory=list)
     source_manifest: list[dict[str, Any]] = field(default_factory=list)
+    audit: dict[str, list[Any]] = field(default_factory=dict)
+    _audit_keys: tuple[str, ...] | None = None
     _total_count: int = 0
 
     def __len__(self) -> int:
@@ -72,6 +77,7 @@ class ZarrEpisodeBuffers:
         next_point_cloud: np.ndarray | None = None,
         next_state: np.ndarray | None = None,
         next_action: np.ndarray | None = None,
+        audit: Mapping[str, Any] | None = None,
     ) -> None:
         pc = _as_pc(point_cloud)
         st = _as_vec(state, STATE_DIM, "state")
@@ -79,6 +85,25 @@ class ZarrEpisodeBuffers:
         npc = pc if next_point_cloud is None else _as_pc(next_point_cloud)
         nst = st if next_state is None else _as_vec(next_state, STATE_DIM, "next_state")
         nact = act if next_action is None else _as_vec(next_action, ACTION_DIM, "next_action")
+        for name, value in (("state", st), ("next_state", nst)):
+            if np.any(value[20:] < 0.0) or np.any(value[20:] > 100.0):
+                raise ValueError(f"{name} dexhand values must be within [0,100]")
+        for name, value in (("action", act), ("next_action", nact)):
+            if np.any(value[14:] < 0.0) or np.any(value[14:] > 100.0):
+                raise ValueError(f"{name} hand command values must be within [0,100]")
+
+        audit_keys: tuple[str, ...] | None = None
+        if audit is not None:
+            audit_keys = tuple(sorted(str(k) for k in audit))
+            if self._audit_keys is None:
+                if self._total_count > 0:
+                    raise ValueError("audit metadata must be present for every transition")
+            elif audit_keys != self._audit_keys:
+                raise ValueError(
+                    f"audit keys changed within zarr buffer: {audit_keys} != {self._audit_keys}"
+                )
+        elif self._audit_keys is not None:
+            raise ValueError("audit metadata missing for a transition after audit started")
 
         self.point_cloud.append(pc)
         self.next_point_cloud.append(npc)
@@ -89,6 +114,17 @@ class ZarrEpisodeBuffers:
         self.reward.append(float(reward))
         self.done.append(bool(done))
         self.timeout.append(bool(timeout))
+        if audit is not None:
+            if self._audit_keys is None:
+                self._audit_keys = audit_keys
+                self.audit = {key: [] for key in audit_keys or ()}
+            for key in self._audit_keys:
+                value = audit[key]
+                if isinstance(value, np.ndarray):
+                    value = value.copy()
+                self.audit[key].append(value)
+        elif self._audit_keys is not None:
+            raise ValueError("audit metadata missing for a transition after audit started")
         self._total_count += 1
 
     def close_episode(self, *, source: dict[str, Any] | None = None) -> None:

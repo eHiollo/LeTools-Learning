@@ -16,6 +16,7 @@ Examples::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -27,6 +28,27 @@ if str(ROOT) not in sys.path:
 
 def _print(obj: object) -> None:
     print(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
+
+
+def _config_sha256(path: str | None) -> str:
+    if not path:
+        return "unknown"
+    cfg_path = Path(path)
+    if not cfg_path.is_file():
+        return "unknown"
+    return hashlib.sha256(cfg_path.read_bytes()).hexdigest()
+
+
+def _zarr_attrs(cfg, *, smoke: bool = False) -> dict[str, object]:
+    return {
+        "task": cfg.task,
+        "contract": cfg.contract,
+        "state_dim": cfg.state_dim,
+        "action_dim": cfg.action_dim,
+        "smooth_penalty": cfg.smooth_penalty,
+        "collection_config_sha256": _config_sha256(getattr(cfg, "config_path", None)),
+        "smoke": smoke,
+    }
 
 
 def _load_cfg(args: argparse.Namespace):
@@ -45,6 +67,8 @@ def _load_cfg(args: argparse.Namespace):
         cfg.only_success = True
     if getattr(args, "confirm_live", False):
         cfg.confirm_live = True
+    cfg.validate_contract()
+    cfg.config_path = getattr(args, "config", None)
     return cfg
 
 
@@ -67,10 +91,11 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             "hand": cfg.hand_command_topic,
         },
         "quality_gates": {
-            "require_command_action": cfg.require_command_action,
-            "min_arm_action_state_delta_rad": cfg.min_arm_action_state_delta_rad,
-            "require_gripper_motion": cfg.require_gripper_motion,
-            "min_gripper_action_range": cfg.min_gripper_action_range,
+            "start_on_any_command": cfg.start_on_any_command,
+            "command_hold_last": cfg.command_hold_last,
+            "require_hand_motion": cfg.require_hand_motion,
+            "min_hand_action_range": cfg.min_hand_action_range,
+            "max_consecutive_source_failures": cfg.max_consecutive_source_failures,
         },
         "cameras": [
             {
@@ -118,8 +143,17 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     rng = np.random.default_rng(0)
     for i, result in enumerate(["success", "failure", "success"]):
         t = 8 + i
-        states = [rng.normal(size=(STATE_DIM,)).astype(np.float32) for _ in range(t)]
-        actions = [rng.normal(size=(ACTION_DIM,)).astype(np.float32) for _ in range(t)]
+        actions = []
+        for _ in range(t):
+            action = np.zeros((ACTION_DIM,), dtype=np.float32)
+            action[:14] = rng.normal(size=(14,)).astype(np.float32)
+            action[14:] = rng.uniform(0.0, 100.0, size=(12,)).astype(np.float32)
+            actions.append(action)
+        states = []
+        for _ in range(t):
+            state = rng.normal(size=(STATE_DIM,)).astype(np.float32)
+            state[20:] = rng.uniform(0.0, 100.0, size=(12,)).astype(np.float32)
+            states.append(state)
         pcs = [
             downsample_fps(rng.normal(size=(5000, 3)).astype(np.float32), NUM_POINTS)
             for _ in range(t)
@@ -141,7 +175,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
         lambda_penalty=cfg.lambda_penalty,
         smooth_penalty=cfg.smooth_penalty,
         max_episode_len=cfg.max_episode_len,
-        attrs={"task": cfg.task, "smoke": True},
+        attrs=_zarr_attrs(cfg, smoke=True),
     )
     _print(report)
     return 0
@@ -160,7 +194,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         lambda_penalty=cfg.lambda_penalty,
         smooth_penalty=cfg.smooth_penalty,
         max_episode_len=cfg.max_episode_len,
-        attrs={"task": cfg.task},
+        attrs=_zarr_attrs(cfg),
     )
     _print(report)
     return 0
@@ -170,7 +204,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     import numpy as np
     import zarr
 
-    from kuavo_rl.rl100_zarr.live_collect import episode_action_quality_errors
+    from kuavo_rl.rl100_zarr.live_collect import (
+        episode_action_quality_errors,
+        episode_action_quality_report,
+    )
 
     cfg = _load_cfg(args)
     path = Path(args.zarr_path) if args.zarr_path else cfg.zarr_path()
@@ -179,15 +216,23 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     meta = root["meta"]
     states = np.asarray(data["state"][:], dtype=np.float32)
     actions = np.asarray(data["action"][:], dtype=np.float32)
+    audit = {
+        name: np.asarray(meta[name][:])
+        for name in meta.array_keys()
+        if name != "episode_ends"
+    }
     quality_errors = episode_action_quality_errors(
         [row for row in states],
         [row for row in actions],
-        min_arm_action_state_delta_rad=cfg.min_arm_action_state_delta_rad,
-        require_gripper_motion=cfg.require_gripper_motion,
-        min_gripper_action_range=cfg.min_gripper_action_range,
+        require_gripper_motion=cfg.require_hand_motion,
+        min_gripper_action_range=cfg.min_hand_action_range,
+        audit=audit or None,
     )
-    arm_idx = [*range(7), *range(8, 15)]
-    gripper_range = np.ptp(actions[:, [7, 15]], axis=0)
+    quality_report = episode_action_quality_report(
+        [row for row in states],
+        [row for row in actions],
+        audit=audit or None,
+    )
     out = {
         "path": str(path),
         "attrs": dict(root.attrs),
@@ -198,13 +243,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "action_quality": {
             "ok": not quality_errors,
             "errors": quality_errors,
-            "arm_action_state_max_abs_rad": float(
-                np.max(np.abs(actions[:, arm_idx] - states[:, arm_idx]))
-            ),
-            "left_gripper_action_range": float(gripper_range[0]),
-            "right_gripper_action_range": float(gripper_range[1]),
-            "gripper_action_min": actions[:, [7, 15]].min(axis=0).tolist(),
-            "gripper_action_max": actions[:, [7, 15]].max(axis=0).tolist(),
+            "report": quality_report,
         },
     }
     _print(out)
@@ -228,7 +267,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
             lambda_penalty=cfg.lambda_penalty,
             smooth_penalty=cfg.smooth_penalty,
             max_episode_len=cfg.max_episode_len,
-            attrs={"task": cfg.task},
+            attrs=_zarr_attrs(cfg),
         )
         _print({"build": built})
     return 0

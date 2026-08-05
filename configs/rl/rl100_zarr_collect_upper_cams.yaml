@@ -4,6 +4,7 @@
 # Use with: roslaunch configs/launch/hil_upper_cams.launch
 
 task: grasp_8_4_v2
+contract: rl100_topic_native_v1
 output_root: data/rl100
 zarr_name: grasp_8_4_v2.zarr
 overwrite: false
@@ -12,11 +13,15 @@ only_success: true
 
 fps: 10
 num_points: 1024
-state_dim: 16
-action_dim: 16
+state_dim: 32
+action_dim: 26
+arm_command_dim: 14
+hand_command_dim: 12
+raw_joint_dim: 20
+dexhand_state_dim: 12
 
 lambda_penalty: 0.05
-smooth_penalty: 0.01
+smooth_penalty: 0.0
 max_episode_len: 2000
 
 base_frame: base_link
@@ -52,16 +57,24 @@ min_workspace_points: 32
 joystick_topic: /quest_joystick_data
 arm_traj_topic: /kuavo_arm_traj
 sensors_topic: /sensors_data_raw
+dexhand_state_topic: /dexhand/state
 hand_command_topic: /control_robot_hand_position
-hand_command_timeout_s: 0.20
-qiangnao_scalar_index: 0
+hand_default: [0, 99, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0]
+hand_default_tolerance: 2.0
+start_on_any_command: true
+command_hold_last: true
+command_timeout_s: null
+joint_state_max_age_s: 0.15
+dexhand_state_max_age_s: 0.15
+state_max_skew_s: 0.10
+depth_max_age_s: 0.15
+camera_max_skew_s: 0.10
+max_consecutive_source_failures: 3
 
 # Never write hold-state fallbacks as BC labels. For this grasp task at least
 # one hand must move by 5% or the episode is discarded before staging.
-require_command_action: true
-min_arm_action_state_delta_rad: 0.0001
-require_gripper_motion: true
-min_gripper_action_range: 0.05
+require_hand_motion: true
+min_hand_action_range: 5.0
 
 confirm_live: true
 shadow_mode: true

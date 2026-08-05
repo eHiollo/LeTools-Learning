@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kuavo_rl.contracts import ACTION_DIM, STATE_DIM
+from kuavo_rl.contracts import RL100_ACTION_DIM as ACTION_DIM, RL100_STATE_DIM as STATE_DIM
 from kuavo_rl.rl100_zarr.episode import append_labeled_episode
 from kuavo_rl.rl100_zarr.live_collect import episode_action_quality_errors
 from kuavo_rl.rl100_zarr.pointcloud import (
@@ -115,7 +115,8 @@ def test_default_config_aligns_real_collect():
     assert cfg.env_config.endswith("kuavo_hilserl_real_mvp.yaml")
     assert cfg.require_all_cameras is True
     assert cfg.fail_on_empty_pointcloud is True
-    assert cfg.require_command_action is True
+    assert cfg.start_on_any_command is True
+    assert cfg.command_hold_last is True
     assert all(c.depth_msg_type == "compressed_depth" for c in cfg.cameras)
     assert all("compressedDepth" in c.depth_topic for c in cfg.cameras)
 
@@ -130,12 +131,12 @@ def test_default_config_aligns_real_collect():
     assert upper_cfg.task == "grasp_8_4_v2"
     assert upper_cfg.only_success is True
     assert upper_cfg.hand_command_topic == "/control_robot_hand_position"
-    assert upper_cfg.require_gripper_motion is True
+    assert upper_cfg.require_hand_motion is True
 
 
 def test_episode_action_quality_rejects_hold_state_and_constant_gripper():
     states = [np.zeros(STATE_DIM, dtype=np.float32) for _ in range(4)]
-    actions = [s.copy() for s in states]
+    actions = [np.zeros(ACTION_DIM, dtype=np.float32) for _ in range(4)]
     errors = episode_action_quality_errors(
         states,
         actions,
@@ -143,16 +144,15 @@ def test_episode_action_quality_rejects_hold_state_and_constant_gripper():
         require_gripper_motion=True,
         min_gripper_action_range=0.05,
     )
-    assert any("indistinguishable" in error for error in errors)
-    assert any("no effective gripper" in error for error in errors)
+    assert any("no effective hand" in error for error in errors)
 
 
 def test_episode_action_quality_accepts_real_arm_and_gripper_commands():
     states = [np.zeros(STATE_DIM, dtype=np.float32) for _ in range(4)]
-    actions = [s.copy() for s in states]
+    actions = [np.zeros(ACTION_DIM, dtype=np.float32) for _ in range(4)]
     for i, action in enumerate(actions):
         action[0] = 0.01 * (i + 1)
-        action[7] = i / 3
+        action[14] = i * 10.0
     errors = episode_action_quality_errors(
         states,
         actions,
@@ -167,8 +167,15 @@ def test_write_zarr_roundtrip(tmp_path: Path):
     pytest.importorskip("zarr")
     buffers = ZarrEpisodeBuffers()
     rng = np.random.default_rng(2)
-    states = [rng.normal(size=(STATE_DIM,)).astype(np.float32) for _ in range(5)]
-    actions = [rng.normal(size=(ACTION_DIM,)).astype(np.float32) for _ in range(5)]
+    states = []
+    actions = []
+    for _ in range(5):
+        state = rng.normal(size=(STATE_DIM,)).astype(np.float32)
+        state[20:] = rng.uniform(0.0, 100.0, size=12)
+        action = rng.normal(size=(ACTION_DIM,)).astype(np.float32)
+        action[14:] = rng.uniform(0.0, 100.0, size=12)
+        states.append(state)
+        actions.append(action)
     pcs = [downsample_fps(rng.normal(size=(3000, 3)).astype(np.float32)) for _ in range(5)]
     assert append_labeled_episode(
         buffers,
@@ -196,6 +203,8 @@ def test_write_zarr_roundtrip(tmp_path: Path):
     assert root["data"]["action"].shape == (10, ACTION_DIM)
     assert root["data"]["point_cloud"].shape == (10, NUM_POINTS, 3)
     assert list(root["meta"]["episode_ends"][:]) == [5, 10]
+    assert root.attrs["contract"] == "rl100_topic_native_v1"
+    assert root.attrs["smooth_penalty"] == 0.0
 
 
 def test_staging_build_only_success(tmp_path: Path):
@@ -206,8 +215,24 @@ def test_staging_build_only_success(tmp_path: Path):
         t = 4
         save_episode_npz(
             ep_dir / f"{i}_{result}.npz",
-            states=[rng.normal(size=(STATE_DIM,)).astype(np.float32) for _ in range(t)],
-            actions=[rng.normal(size=(ACTION_DIM,)).astype(np.float32) for _ in range(t)],
+            states=[
+                np.concatenate(
+                    [
+                        rng.normal(size=20),
+                        rng.uniform(0.0, 100.0, size=12),
+                    ]
+                ).astype(np.float32)
+                for _ in range(t)
+            ],
+            actions=[
+                np.concatenate(
+                    [
+                        rng.normal(size=14),
+                        rng.uniform(0.0, 100.0, size=12),
+                    ]
+                ).astype(np.float32)
+                for _ in range(t)
+            ],
             point_clouds=[
                 downsample_fps(rng.normal(size=(1000, 3)).astype(np.float32)) for _ in range(t)
             ],

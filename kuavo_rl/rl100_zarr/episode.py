@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -22,10 +22,12 @@ def append_labeled_episode(
     point_clouds: Sequence[np.ndarray],
     result_type: str,
     lambda_penalty: float = 0.05,
-    smooth_penalty: float = 0.01,
+    smooth_penalty: float = 0.0,
+    smooth_scales: np.ndarray | None = None,
     max_episode_len: int = 2000,
     only_success: bool = False,
     source: dict[str, Any] | None = None,
+    audit: Mapping[str, Sequence[Any]] | None = None,
 ) -> bool:
     """Append one episode if it passes the keep filter. Returns whether kept."""
     if not should_keep_episode(result_type, only_success=only_success):
@@ -39,12 +41,18 @@ def append_labeled_episode(
     if n == 0:
         return False
 
+    if audit is not None:
+        bad = {str(key): len(values) for key, values in audit.items() if len(values) != n}
+        if bad:
+            raise ValueError(f"audit length mismatch for episode of {n} steps: {bad}")
+
     act_arr = np.stack([np.asarray(a, dtype=np.float32) for a in actions], axis=0)
     rewards = assign_episode_rewards(
         act_arr,
         is_success=is_success_result(result_type),
         lambda_penalty=lambda_penalty,
         smooth_penalty=smooth_penalty,
+        smooth_scales=smooth_scales,
         max_episode_len=max_episode_len,
     )
 
@@ -61,6 +69,7 @@ def append_labeled_episode(
             next_point_cloud=point_clouds[nxt],
             next_state=states[nxt],
             next_action=actions[nxt],
+            audit={key: values[i] for key, values in audit.items()} if audit is not None else None,
         )
 
     meta = {"result_type": result_type, "length": n}

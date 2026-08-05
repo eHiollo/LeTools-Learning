@@ -1,5 +1,8 @@
 # RL-100 real deployment.  This file is deliberately shadow-only until the
 # field-approved joint limits and startup pose are filled in below.
+contract: rl100_topic_native_v1
+state_dim: 32
+action_dim: 26
 checkpoint:
   path: outputs/rl100/grasp_8_4_v2/checkpoints/latest.ckpt
   device: cuda:0
@@ -17,37 +20,44 @@ inference:
 observation:
   pointcloud_config: configs/rl/rl100_zarr_collect_upper_cams.yaml
   history_startup: repeat_first
-  state_max_age_s: 0.15
-  hand_max_age_s: 0.15
+  raw_joint_topic: /sensors_data_raw
+  dexhand_state_topic: /dexhand/state
+  joint_state_max_age_s: 0.15
+  dexhand_state_max_age_s: 0.15
+  state_max_skew_s: 0.10
   depth_max_age_s: 0.15
-  max_state_hand_skew_s: 0.10
   max_camera_skew_s: 0.10
   max_state_cloud_skew_s: 0.10
 
-robot:
-  deploy_config: configs/deploy/total/deploy_real_rl100_upper.yaml
-  expected_raw_joint_dims: [20]
-  expected_eef_type: qiangnao
-  publish_unit: rad_to_sdk
+publish:
+  arm_topic: /kuavo_arm_traj
+  hand_topic: /control_robot_hand_position
+  arm_unit: degree
+  hand_range: [0, 100]
+  hand_rounding: nearest
+  require_subscribers: true
+  arm_joint_names: [arm_joint_0, arm_joint_1, arm_joint_2, arm_joint_3,
+                    arm_joint_4, arm_joint_5, arm_joint_6, arm_joint_7,
+                    arm_joint_8, arm_joint_9, arm_joint_10, arm_joint_11,
+                    arm_joint_12, arm_joint_13]
 
 safety:
   # REQUIRED before live. Do not replace with broad [-pi, pi] placeholders.
   arm_joint_low_rad: null
   arm_joint_high_rad: null
   max_arm_step_rad: 0.02
-  max_gripper_step: 0.05
+  max_hand_step: 5.0
   max_arm_state_jump_rad: 0.05
-  max_gripper_state_jump: 0.10
+  max_hand_state_jump: 5.0
   max_consecutive_clips: 3
   max_consecutive_source_failures: 1
   max_episode_steps: 200
   max_episode_duration_s: 20.0
+  fault_hold_once_if_state_fresh: true
 
 startup:
-  # REQUIRED before live, in canonical [L7, gL, R7, gR] order.
-  expected_pose16: null
-  max_arm_error_rad: 0.10
-  max_gripper_error: 0.15
+  hand_default: [0, 99, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0]
+  hand_default_tolerance: 2.0
   require_physical_estop_ready: true
   require_operator_start: true
 

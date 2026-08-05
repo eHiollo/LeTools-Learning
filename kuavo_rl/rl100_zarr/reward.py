@@ -10,7 +10,8 @@ def assign_episode_rewards(
     *,
     is_success: bool,
     lambda_penalty: float = 0.05,
-    smooth_penalty: float = 0.01,
+    smooth_penalty: float = 0.0,
+    smooth_scales: np.ndarray | None = None,
     max_episode_len: int = 2000,
 ) -> np.ndarray:
     """Build per-step rewards for one episode.
@@ -31,8 +32,19 @@ def assign_episode_rewards(
         terminal = 1.0 - float(lambda_penalty) * (t / max(max_episode_len, 1))
         rewards[-1] = float(terminal)
 
+    if smooth_penalty > 0.0 and acts.shape[1] == 26 and smooth_scales is None:
+        raise ValueError(
+            "mixed-unit RL-100 action smoothness requires explicit smooth_scales; "
+            "use smooth_penalty=0.0 for the topic-native contract"
+        )
     if smooth_penalty > 0.0 and t > 1:
-        deltas = np.linalg.norm(acts[1:] - acts[:-1], axis=-1)
+        delta = acts[1:] - acts[:-1]
+        if smooth_scales is not None:
+            scales = np.asarray(smooth_scales, dtype=np.float32).reshape(-1)
+            if scales.shape != (acts.shape[1],) or not np.isfinite(scales).all() or np.any(scales <= 0.0):
+                raise ValueError("smooth_scales must be finite, positive and action-dimensional")
+            delta = delta / scales
+        deltas = np.linalg.norm(delta, axis=-1)
         rewards[1:] -= float(smooth_penalty) * deltas.astype(np.float32)
 
     return rewards

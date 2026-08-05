@@ -14,6 +14,14 @@ from kuavo_rl.rl100_zarr.schema import (
     ZarrEpisodeBuffers,
     compute_return,
 )
+from kuavo_rl.contracts import (
+    RL100_ACTION_DIM,
+    RL100_ARM_JOINT_NAMES,
+    RL100_DEXHAND_JOINT_NAMES,
+    RL100_HAND_DEFAULT,
+    RL100_STATE_DIM,
+    RL100_TOPIC_NATIVE_CONTRACT,
+)
 
 ZARR_CHUNK_LEAD = 100
 
@@ -51,9 +59,25 @@ def write_rl100_zarr(
 
     manifest = list(buffers.source_manifest)
     root.attrs["source_manifest"] = manifest
-    root.attrs["kuavo_contract"] = "v62-16d-r1"
+    root.attrs["contract"] = RL100_TOPIC_NATIVE_CONTRACT
+    root.attrs["state_dim"] = RL100_STATE_DIM
+    root.attrs["action_dim"] = RL100_ACTION_DIM
+    root.attrs["state_order"] = "raw_joint_q20 + dexhand_position12"
+    root.attrs["action_order"] = "arm14_deg + left_hand6_raw + right_hand6_raw"
+    root.attrs["state_units"] = {"raw_joint_q20": "rad", "dexhand_position12": "0..100"}
+    root.attrs["action_units"] = {"arm14_deg": "degree", "hand12_raw": "0..100"}
+    root.attrs["dexhand_joint_names"] = list(RL100_DEXHAND_JOINT_NAMES)
+    root.attrs["arm_joint_names"] = list(RL100_ARM_JOINT_NAMES)
+    root.attrs["hand_default"] = RL100_HAND_DEFAULT.tolist()
+    root.attrs["smooth_penalty"] = float((attrs or {}).get("smooth_penalty", 0.0))
+    root.attrs["collection_config_sha256"] = str((attrs or {}).get("collection_config_sha256", "unknown"))
     root.attrs["schema"] = "rl100-zarr-v1"
     if attrs:
+        requested_contract = attrs.get("contract")
+        if requested_contract is not None and str(requested_contract) != RL100_TOPIC_NATIVE_CONTRACT:
+            raise ValueError(
+                f"zarr contract must be {RL100_TOPIC_NATIVE_CONTRACT}, got {requested_contract!r}"
+            )
         for k, v in attrs.items():
             root.attrs[k] = v
 
@@ -116,5 +140,27 @@ def write_rl100_zarr(
     _create(data, "done", done, chunks=(ZARR_CHUNK_LEAD, 1))
     _create(data, "timeout", timeout, chunks=(ZARR_CHUNK_LEAD, 1))
     _create(meta, "episode_ends", episode_ends)
+
+    if buffers.audit:
+        written_audit: list[str] = []
+        skipped_audit: list[str] = []
+        for name, values in sorted(buffers.audit.items()):
+            array = np.asarray(values)
+            if array.shape[0] != len(buffers):
+                raise ValueError(f"audit field {name!r} length mismatch")
+            # zarr v2 does not reliably support object arrays.  Store strings
+            # as fixed-width bytes and keep numeric/bool fields unchanged.
+            if array.dtype.kind == "O":
+                array = np.asarray([str(v) for v in values], dtype="S64")
+            elif array.dtype.kind == "U":
+                array = array.astype("S64")
+            if array.dtype.kind not in "biufSc":
+                skipped_audit.append(name)
+                continue
+            _create(meta, name, array, chunks=(ZARR_CHUNK_LEAD, *array.shape[1:]))
+            written_audit.append(name)
+        root.attrs["audit_fields"] = written_audit
+        if skipped_audit:
+            root.attrs["audit_fields_skipped"] = skipped_audit
 
     return out

@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from kuavo_rl.contracts import ACTION_DIM
+from kuavo_rl.rl100_zarr.topic_native import TopicCommandCache, TopicCommandSnapshot
 from kuavo_rl.teleop import TeleopAdapter, TeleopEvent
 
 
@@ -70,6 +71,9 @@ class RosTeleopAdapter(TeleopAdapter):
         self._label_gestures_enabled = True
         self._reward_stick_armed = True
         self._reward_stick_last_fire: float | None = None
+        # RL-100 uses the complete command topics.  The cache is inactive
+        # until begin_topic_native_episode(), so generic HIL use is unchanged.
+        self._topic_native_cache = TopicCommandCache()
 
     def start(self) -> None:
         if self._ros is not None:
@@ -102,6 +106,7 @@ class RosTeleopAdapter(TeleopAdapter):
             )
 
     def close(self) -> None:
+        self._topic_native_cache.end_episode()
         for sub in self._subs:
             try:
                 sub.unregister()
@@ -166,6 +171,7 @@ class RosTeleopAdapter(TeleopAdapter):
             return
         self._latest_arm = np.deg2rad(position).astype(np.float32)
         self._latest_arm_time = self._now()
+        self._topic_native_cache.update_arm(msg)
 
     def _hand_command_callback(self, msg: Any) -> None:
         def _positions(value: Any) -> np.ndarray:
@@ -184,6 +190,27 @@ class RosTeleopAdapter(TeleopAdapter):
             return
         self._latest_hand = np.clip(grasp / 100.0, 0.0, 1.0).astype(np.float32)
         self._latest_hand_time = self._now()
+        self._topic_native_cache.update_hand(msg)
+
+    def begin_topic_native_episode(self, measured_arm14_rad: np.ndarray) -> int:
+        """Reset the RL-100 command cache at the operator record boundary."""
+        generation = self._topic_native_cache.generation + 1
+        self._topic_native_cache.begin_episode(
+            measured_arm14_rad,
+            generation=generation,
+            record_start_received_at=time.monotonic(),
+        )
+        return generation
+
+    def end_topic_native_episode(self) -> None:
+        self._topic_native_cache.end_episode()
+
+    @property
+    def topic_native_cache(self) -> TopicCommandCache:
+        return self._topic_native_cache
+
+    def topic_native_snapshot(self, sample_cutoff_received_at: float | None = None) -> TopicCommandSnapshot:
+        return self._topic_native_cache.snapshot_and_clear_changed(sample_cutoff_received_at)
 
     def _now(self) -> float:
         if self._ros is not None:

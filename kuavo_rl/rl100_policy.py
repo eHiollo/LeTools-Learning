@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from kuavo_rl.contracts import ACTION_DIM, STATE_DIM
+from kuavo_rl.contracts import RL100_ACTION_DIM, RL100_STATE_DIM, RL100_TOPIC_NATIVE_CONTRACT
 
 ModelSource = Literal["auto", "ema_model", "model"]
 
@@ -33,6 +33,7 @@ class RL100CheckpointInfo:
     action_dim: int
     scheduler_type: str
     use_cm: bool
+    contract: str = RL100_TOPIC_NATIVE_CONTRACT
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -59,10 +60,10 @@ def validate_shape_meta(shape_meta: Any) -> tuple[int, int, int, int]:
     action_shape = _shape(shape_meta, ("action", "shape"))
     if point_shape != (1024, 3):
         raise ValueError(f"point_cloud shape {point_shape} != (1024, 3)")
-    if state_shape != (STATE_DIM,):
-        raise ValueError(f"agent_pos shape {state_shape} != ({STATE_DIM},)")
-    if action_shape != (ACTION_DIM,):
-        raise ValueError(f"action shape {action_shape} != ({ACTION_DIM},)")
+    if state_shape != (RL100_STATE_DIM,):
+        raise ValueError(f"agent_pos shape {state_shape} != ({RL100_STATE_DIM},)")
+    if action_shape != (RL100_ACTION_DIM,):
+        raise ValueError(f"action shape {action_shape} != ({RL100_ACTION_DIM},)")
     return point_shape[0], point_shape[1], state_shape[0], action_shape[0]
 
 
@@ -105,7 +106,7 @@ def sha256_file(path: Path) -> str:
 
 
 class RL100Policy:
-    """A loaded RL-100 policy returning unnormalized absolute 16-D actions."""
+    """A loaded RL-100 policy returning unnormalized absolute 26-D actions."""
 
     def __init__(
         self,
@@ -158,6 +159,13 @@ class RL100Policy:
         if not isinstance(payload, dict) or "cfg" not in payload or "state_dicts" not in payload:
             raise ValueError("not an RL-100 workspace checkpoint: expected cfg and state_dicts")
         cfg = payload["cfg"]
+        cfg_contract = _get(cfg, "contract", _get(payload, "contract", None))
+        if cfg_contract is None:
+            raise ValueError("checkpoint is missing the RL-100 topic-native contract")
+        if str(cfg_contract) != RL100_TOPIC_NATIVE_CONTRACT:
+            raise ValueError(
+                f"checkpoint contract {cfg_contract!r} != {RL100_TOPIC_NATIVE_CONTRACT!r}"
+            )
         policy_cfg = _get(cfg, "policy")
         if policy_cfg is None:
             raise ValueError("checkpoint cfg has no policy")
@@ -192,6 +200,7 @@ class RL100Policy:
             action_dim=action_dim,
             scheduler_type=str(_get(policy_cfg, "scheduler_type", "unknown")),
             use_cm=bool(_get(policy_cfg, "use_cm", _get(policy, "use_cm", False))),
+            contract=RL100_TOPIC_NATIVE_CONTRACT,
         )
         return cls(
             policy,
@@ -232,9 +241,9 @@ class RL100Policy:
         if "action" not in result:
             raise RuntimeError("RL-100 policy returned no action")
         action = result["action"].detach().float().cpu().numpy()
-        if action.shape != (1, self.info.n_action_steps, ACTION_DIM):
+        if action.shape != (1, self.info.n_action_steps, RL100_ACTION_DIM):
             raise RuntimeError(
-                f"RL-100 action shape {action.shape} != (1, {self.info.n_action_steps}, {ACTION_DIM})"
+                f"RL-100 action shape {action.shape} != (1, {self.info.n_action_steps}, {RL100_ACTION_DIM})"
             )
         action = action[0].astype(np.float32, copy=False)
         if not np.isfinite(action).all():

@@ -12,7 +12,17 @@ import numpy as np
 
 from kuavo_rl.backend import BackendObservation, RobotBackend
 from kuavo_rl.config import SafetyConfig
-from kuavo_rl.contracts import ACTION_DIM, FaultCode, STATE_DIM, validate_action_shape
+from kuavo_rl.contracts import (
+    ACTION_DIM,
+    FaultCode,
+    RL100_ACTION_DIM,
+    RL100_ARM_JOINT_NAMES,
+    RL100_ARM_SLICE_RAW20,
+    RL100_STATE_DIM,
+    RL100_TOPIC_NATIVE_CONTRACT,
+    STATE_DIM,
+    validate_action_shape,
+)
 from kuavo_rl.ros_adapter import build_published_command
 from kuavo_rl.safety import SafetyGate
 
@@ -356,3 +366,557 @@ def make_safety_config(
         max_consecutive_clips=int(max_consecutive_clips),
         control_dt_s=float(control_dt_s),
     )
+
+
+# ---------------------------------------------------------------------------
+# RL-100 topic-native deployment path.  The legacy 16-D runner above remains
+# available for existing HIL/ACT policies; these classes are intentionally
+# independent of its SDK/radian action bridge.
+
+
+@dataclass(frozen=True)
+class RL100TopicPublishedCommand:
+    raw_action26: np.ndarray
+    limited_action26: np.ndarray
+    arm14_rad: np.ndarray
+    arm14_deg: np.ndarray
+    hand12_raw: np.ndarray
+    hand12_uint8: np.ndarray
+    clip_mask26: np.ndarray
+
+
+@dataclass(frozen=True)
+class RL100TopicSafetyResult:
+    ok: bool
+    command: RL100TopicPublishedCommand
+    clipped: bool
+    fault_code: FaultCode
+    reason: str = ""
+
+
+def build_rl100_topic_command(action26: np.ndarray) -> RL100TopicPublishedCommand:
+    """Validate model output and create topic-native fields without publishing."""
+    from kuavo_rl.rl100_zarr.topic_native import validate_topic_native_prediction
+
+    raw = validate_topic_native_prediction(action26)
+    arm_deg = raw[:14].copy()
+    hand_raw = np.clip(raw[14:], 0.0, 100.0).astype(np.float32)
+    hand_uint8 = np.rint(hand_raw).astype(np.uint8)
+    return RL100TopicPublishedCommand(
+        raw_action26=raw.copy(),
+        limited_action26=raw.copy(),
+        arm14_rad=np.deg2rad(arm_deg).astype(np.float32),
+        arm14_deg=arm_deg,
+        hand12_raw=hand_raw,
+        hand12_uint8=hand_uint8,
+        clip_mask26=np.zeros(RL100_ACTION_DIM, dtype=bool),
+    )
+
+
+class RL100TopicSafetyGate:
+    """Safety checks in physical units, then returns degree/raw topic fields."""
+
+    def __init__(
+        self,
+        *,
+        arm_low_rad: np.ndarray,
+        arm_high_rad: np.ndarray,
+        max_arm_step_rad: float | np.ndarray,
+        max_hand_step: float | np.ndarray,
+        max_consecutive_clips: int = 3,
+        max_arm_state_jump_rad: float = 0.05,
+        max_hand_state_jump: float = 5.0,
+    ) -> None:
+        self.arm_low_rad = np.asarray(arm_low_rad, dtype=np.float32).reshape(-1)
+        self.arm_high_rad = np.asarray(arm_high_rad, dtype=np.float32).reshape(-1)
+        if self.arm_low_rad.shape != (14,) or self.arm_high_rad.shape != (14,):
+            raise ValueError("topic-native arm limits must be 14-D")
+        if np.any(~np.isfinite(self.arm_low_rad)) or np.any(~np.isfinite(self.arm_high_rad)):
+            raise ValueError("topic-native arm limits contain NaN/Inf")
+        if np.any(self.arm_low_rad >= self.arm_high_rad):
+            raise ValueError("topic-native arm low limits must be less than high limits")
+        self.max_arm_step_rad = np.broadcast_to(
+            np.asarray(max_arm_step_rad, dtype=np.float32), (14,)
+        ).copy()
+        self.max_hand_step = np.broadcast_to(
+            np.asarray(max_hand_step, dtype=np.float32), (12,)
+        ).copy()
+        if np.any(self.max_arm_step_rad <= 0) or np.any(self.max_hand_step <= 0):
+            raise ValueError("topic-native step limits must be positive")
+        self.max_consecutive_clips = int(max_consecutive_clips)
+        self.max_arm_state_jump_rad = float(max_arm_state_jump_rad)
+        self.max_hand_state_jump = float(max_hand_state_jump)
+        if self.max_arm_state_jump_rad <= 0 or self.max_hand_state_jump <= 0:
+            raise ValueError("measured-state jump limits must be positive")
+        self._last_action26: np.ndarray | None = None
+        self.consecutive_clips = 0
+
+    def reset(self) -> None:
+        self._last_action26 = None
+        self.consecutive_clips = 0
+
+    def check(
+        self,
+        action26: np.ndarray,
+        measured_state32: np.ndarray,
+        *,
+        stop: bool = False,
+        ros_shutdown: bool = False,
+    ) -> RL100TopicSafetyResult:
+        from kuavo_rl.rl100_zarr.topic_native import validate_topic_native_prediction
+
+        try:
+            raw = validate_topic_native_prediction(action26)
+        except ValueError as exc:
+            empty = np.zeros(RL100_ACTION_DIM, dtype=np.float32)
+            return RL100TopicSafetyResult(
+                False,
+                self._empty_command(empty),
+                False,
+                FaultCode.ACTION_SHAPE,
+                str(exc),
+            )
+        measured = np.asarray(measured_state32, dtype=np.float32).reshape(-1)
+        if measured.shape != (RL100_STATE_DIM,) or not np.isfinite(measured).all():
+            return RL100TopicSafetyResult(
+                False,
+                self._empty_command(raw),
+                False,
+                FaultCode.STALE_OBSERVATION,
+                "measured topic-native state is not finite 32-D",
+            )
+        if stop:
+            return RL100TopicSafetyResult(False, self._hold_command(measured), False, FaultCode.STOP_SIGNAL, "stop")
+        if ros_shutdown:
+            return RL100TopicSafetyResult(False, self._hold_command(measured), False, FaultCode.ROS_SHUTDOWN, "ros shutdown")
+
+        measured_arm = measured[RL100_ARM_SLICE_RAW20]
+        measured_hand = measured[20:32]
+        if np.any(measured_hand < 0.0) or np.any(measured_hand > 100.0):
+            return RL100TopicSafetyResult(
+                False,
+                self._empty_command(raw),
+                False,
+                FaultCode.STALE_OBSERVATION,
+                "measured dexhand state is outside [0,100]",
+            )
+        target_arm = np.deg2rad(raw[:14]).astype(np.float32)
+        target_hand = raw[14:].copy()
+        clipped = False
+        clip_mask = np.zeros(RL100_ACTION_DIM, dtype=bool)
+
+        limited_arm = np.clip(target_arm, self.arm_low_rad, self.arm_high_rad)
+        arm_mask = ~np.isclose(limited_arm, target_arm)
+        if np.any(arm_mask):
+            clipped = True
+            clip_mask[:14] |= arm_mask
+
+        delta_measured_arm = limited_arm - measured_arm
+        measured_arm_limited = np.clip(
+            delta_measured_arm,
+            -self.max_arm_state_jump_rad,
+            self.max_arm_state_jump_rad,
+        ) + measured_arm
+        if not np.allclose(measured_arm_limited, limited_arm):
+            clipped = True
+            clip_mask[:14] |= ~np.isclose(measured_arm_limited, limited_arm)
+            limited_arm = measured_arm_limited
+
+        limited_hand = np.clip(target_hand, 0.0, 100.0)
+        hand_mask = ~np.isclose(limited_hand, target_hand)
+        if np.any(hand_mask):
+            clipped = True
+            clip_mask[14:] |= hand_mask
+        delta_measured_hand = limited_hand - measured_hand
+        measured_hand_limited = np.clip(
+            delta_measured_hand,
+            -self.max_hand_state_jump,
+            self.max_hand_state_jump,
+        ) + measured_hand
+        if not np.allclose(measured_hand_limited, limited_hand):
+            clipped = True
+            clip_mask[14:] |= ~np.isclose(measured_hand_limited, limited_hand)
+            limited_hand = measured_hand_limited
+
+        limited = np.concatenate([np.rad2deg(limited_arm), limited_hand]).astype(np.float32)
+        if self._last_action26 is not None:
+            previous_arm = np.deg2rad(self._last_action26[:14]).astype(np.float32)
+            previous_hand = self._last_action26[14:]
+            arm_step = np.clip(limited_arm - previous_arm, -self.max_arm_step_rad, self.max_arm_step_rad)
+            hand_step = np.clip(limited_hand - previous_hand, -self.max_hand_step, self.max_hand_step)
+            stepped = np.concatenate([np.rad2deg(previous_arm + arm_step), previous_hand + hand_step]).astype(np.float32)
+            if not np.allclose(stepped, limited):
+                clipped = True
+                clip_mask |= ~np.isclose(stepped, limited)
+                limited = stepped
+
+        if clipped:
+            self.consecutive_clips += 1
+        else:
+            self.consecutive_clips = 0
+        self._last_action26 = limited.copy()
+        command = self._command_from_values(raw, limited, clip_mask)
+        if self.max_consecutive_clips > 0 and self.consecutive_clips >= self.max_consecutive_clips:
+            return RL100TopicSafetyResult(
+                False,
+                command,
+                True,
+                FaultCode.ACTION_LIMIT,
+                "consecutive topic-native safety clips exceeded",
+            )
+        return RL100TopicSafetyResult(True, command, clipped, FaultCode.NONE, "")
+
+    @staticmethod
+    def _command_from_values(raw: np.ndarray, limited: np.ndarray, clip_mask: np.ndarray) -> RL100TopicPublishedCommand:
+        arm_deg = limited[:14].astype(np.float32)
+        hand = limited[14:].astype(np.float32)
+        return RL100TopicPublishedCommand(
+            raw_action26=raw.copy(),
+            limited_action26=limited.copy(),
+            arm14_rad=np.deg2rad(arm_deg).astype(np.float32),
+            arm14_deg=arm_deg.copy(),
+            hand12_raw=hand.copy(),
+            hand12_uint8=np.rint(np.clip(hand, 0.0, 100.0)).astype(np.uint8),
+            clip_mask26=np.asarray(clip_mask, dtype=bool).copy(),
+        )
+
+    def _empty_command(self, raw: np.ndarray) -> RL100TopicPublishedCommand:
+        return self._command_from_values(raw, raw, np.zeros(RL100_ACTION_DIM, dtype=bool))
+
+    def _hold_command(self, measured: np.ndarray) -> RL100TopicPublishedCommand:
+        arm_deg = np.rad2deg(measured[RL100_ARM_SLICE_RAW20]).astype(np.float32)
+        action = np.concatenate([arm_deg, measured[20:32]]).astype(np.float32)
+        return self._command_from_values(action, action, np.zeros(RL100_ACTION_DIM, dtype=bool))
+
+    def hold_command(self, measured: np.ndarray) -> RL100TopicPublishedCommand:
+        """Build one measured-state hold for the fault boundary."""
+        return self._hold_command(measured)
+
+
+class RL100TopicCommandPublisher:
+    """Publish the exact Kuavo arm and Qiangnao hand command messages."""
+
+    def __init__(
+        self,
+        *,
+        arm_topic: str = "/kuavo_arm_traj",
+        hand_topic: str = "/control_robot_hand_position",
+        ros: Any | None = None,
+    ) -> None:
+        self.arm_topic = arm_topic
+        self.hand_topic = hand_topic
+        self._ros = ros
+        self._arm_pub: Any | None = None
+        self._hand_pub: Any | None = None
+        self.publish_count = 0
+
+    def start(self) -> None:
+        if self._arm_pub is not None:
+            return
+        if self._ros is None:
+            import rospy
+
+            self._ros = rospy
+        from kuavo_msgs.msg import robotHandPosition
+        from sensor_msgs.msg import JointState
+
+        self._arm_pub = self._ros.Publisher(self.arm_topic, JointState, queue_size=1)
+        self._hand_pub = self._ros.Publisher(self.hand_topic, robotHandPosition, queue_size=1)
+
+    def close(self) -> None:
+        for pub in (self._arm_pub, self._hand_pub):
+            try:
+                if pub is not None:
+                    pub.unregister()
+            except Exception:  # noqa: BLE001
+                pass
+        self._arm_pub = None
+        self._hand_pub = None
+
+    def connection_counts(self) -> dict[str, int]:
+        return {
+            "arm": int(self._arm_pub.get_num_connections()) if self._arm_pub is not None else 0,
+            "hand": int(self._hand_pub.get_num_connections()) if self._hand_pub is not None else 0,
+        }
+
+    def publish(self, command: RL100TopicPublishedCommand) -> None:
+        if self._arm_pub is None or self._hand_pub is None:
+            raise RuntimeError("RL100TopicCommandPublisher is not started")
+        from kuavo_msgs.msg import robotHandPosition
+        from sensor_msgs.msg import JointState
+
+        stamp = self._ros.Time.now()
+        arm_msg = JointState()
+        arm_msg.header.stamp = stamp
+        arm_msg.name = list(RL100_ARM_JOINT_NAMES)
+        arm_msg.position = [float(v) for v in command.arm14_deg]
+        hand_msg = robotHandPosition()
+        hand_msg.header.stamp = stamp
+        hand_msg.left_hand_position = [int(v) for v in command.hand12_uint8[:6]]
+        hand_msg.right_hand_position = [int(v) for v in command.hand12_uint8[6:]]
+        self._arm_pub.publish(arm_msg)
+        self._hand_pub.publish(hand_msg)
+        self.publish_count += 1
+
+
+@dataclass(frozen=True)
+class RL100TopicRunnerLimits:
+    joint_state_max_age_s: float = 0.15
+    dexhand_state_max_age_s: float = 0.15
+    state_max_skew_s: float = 0.10
+    depth_max_age_s: float = 0.15
+    max_camera_skew_s: float = 0.10
+    max_state_cloud_skew_s: float = 0.10
+    inference_timeout_s: float = 0.10
+    max_consecutive_source_failures: int = 1
+    fault_hold_once_if_state_fresh: bool = True
+
+
+@dataclass(frozen=True)
+class RL100TopicTickResult:
+    state: DeployState
+    published: bool
+    fault_code: FaultCode
+    reason: str
+    record: dict[str, Any]
+
+
+class RL100TopicObservationHistory:
+    def __init__(self, n_obs_steps: int) -> None:
+        if int(n_obs_steps) < 1:
+            raise ValueError("n_obs_steps must be >= 1")
+        self.n_obs_steps = int(n_obs_steps)
+        self._points: deque[np.ndarray] = deque(maxlen=self.n_obs_steps)
+        self._states: deque[np.ndarray] = deque(maxlen=self.n_obs_steps)
+        self.padded_on_start = False
+
+    def clear(self) -> None:
+        self._points.clear()
+        self._states.clear()
+        self.padded_on_start = False
+
+    def append(self, point_cloud: np.ndarray, state32: np.ndarray) -> None:
+        point = np.asarray(point_cloud, dtype=np.float32)
+        state = np.asarray(state32, dtype=np.float32).reshape(-1)
+        if point.shape != (1024, 3):
+            raise ValueError(f"point cloud shape {point.shape} != (1024, 3)")
+        if state.shape != (RL100_STATE_DIM,):
+            raise ValueError(f"state shape {state.shape} != ({RL100_STATE_DIM},)")
+        if not np.isfinite(point).all() or not np.isfinite(state).all():
+            raise ValueError("non-finite topic-native observation")
+        if not self._points:
+            self._points.extend(point.copy() for _ in range(self.n_obs_steps))
+            self._states.extend(state.copy() for _ in range(self.n_obs_steps))
+            self.padded_on_start = self.n_obs_steps > 1
+            return
+        self._points.append(point.copy())
+        self._states.append(state.copy())
+
+    def arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        if len(self._points) != self.n_obs_steps:
+            raise RuntimeError("topic-native observation history is not ready")
+        return np.stack(self._points), np.stack(self._states)
+
+
+class RL100TopicRealRunner:
+    """Synchronous 32/26 RL-100 runner using direct ROS command topics."""
+
+    def __init__(
+        self,
+        *,
+        policy: PolicyLike,
+        state_hub: Any,
+        point_cloud_source: Callable[[], PointCloudSample],
+        publisher: RL100TopicCommandPublisher,
+        safety: RL100TopicSafetyGate,
+        limits: RL100TopicRunnerLimits = RL100TopicRunnerLimits(),
+        shadow_mode: bool = True,
+        audit_sink: Callable[[dict[str, Any]], None] | None = None,
+        stop_source: Callable[[], tuple[bool, bool, bool]] | None = None,
+    ) -> None:
+        self.policy = policy
+        self.state_hub = state_hub
+        self.point_cloud_source = point_cloud_source
+        self.publisher = publisher
+        self.safety = safety
+        self.limits = limits
+        self.shadow_mode = bool(shadow_mode)
+        self.audit_sink = audit_sink
+        self.stop_source = stop_source or (lambda: (False, False, False))
+        self.history = RL100TopicObservationHistory(int(policy.info.n_obs_steps))
+        self.state = DeployState.INIT
+        self._source_failures = 0
+        self._fault_hold_sent = False
+
+    def preflight(self) -> None:
+        self.state = DeployState.PREFLIGHT
+        info = self.policy.info
+        if (
+            str(getattr(info, "contract", RL100_TOPIC_NATIVE_CONTRACT))
+            != RL100_TOPIC_NATIVE_CONTRACT
+            or int(info.state_dim) != RL100_STATE_DIM
+            or int(info.action_dim) != RL100_ACTION_DIM
+        ):
+            self._fault(FaultCode.ACTION_SHAPE, "checkpoint is not RL-100 topic-native 32/26")
+            raise RuntimeError("RL-100 topic-native checkpoint contract mismatch")
+        if int(info.point_count) != 1024 or int(info.point_dim) != 3:
+            self._fault(FaultCode.ACTION_SHAPE, "checkpoint point cloud shape is not 1024x3")
+            raise RuntimeError("RL-100 topic-native point cloud mismatch")
+        self.safety.reset()
+        self.state = DeployState.READY
+
+    def arm_live(self) -> None:
+        if self.shadow_mode:
+            raise RuntimeError("runner is configured shadow_mode=true")
+        if self.state not in {DeployState.READY, DeployState.SHADOW}:
+            raise RuntimeError(f"cannot arm live runner from {self.state}")
+        self.state = DeployState.ARMED
+
+    def tick(self) -> RL100TopicTickResult:
+        started = time.monotonic()
+        record: dict[str, Any] = {"state_before": self.state.value, "published": False}
+        if self.state in {DeployState.FAULT, DeployState.STOPPED}:
+            return self._result(FaultCode.STOP_SIGNAL, "runner is stopped/faulted", record)
+        stop, paused, shutdown = self.stop_source()
+        if stop or shutdown:
+            return self._fault_result(
+                FaultCode.STOP_SIGNAL if stop else FaultCode.ROS_SHUTDOWN,
+                "stop/shutdown signal",
+                record,
+            )
+        if paused:
+            self.state = DeployState.HOLD
+            self.history.clear()
+            return self._result(FaultCode.NONE, "paused", record)
+        if self.state == DeployState.HOLD:
+            self.state = DeployState.READY
+        if self.state == DeployState.READY:
+            if self.shadow_mode:
+                self.state = DeployState.SHADOW
+            else:
+                return self._result(FaultCode.CONFIGURATION_ERROR, "live runner is not armed", record)
+        if self.state == DeployState.ARMED:
+            self.state = DeployState.RUNNING
+
+        state_sample = None
+        phase = "source"
+        try:
+            state_sample = self.state_hub.snapshot(
+                self.limits.joint_state_max_age_s,
+                self.limits.dexhand_state_max_age_s,
+                self.limits.state_max_skew_s,
+            )
+            cloud = self.point_cloud_source()
+            if cloud.points.shape != (1024, 3) or not np.isfinite(cloud.points).all():
+                raise ValueError(f"point cloud shape/finite check failed: {cloud.points.shape}")
+            if cloud.oldest_age_s > self.limits.depth_max_age_s:
+                raise RuntimeError(f"point cloud stale: {cloud.oldest_age_s:.3f}s")
+            if cloud.max_camera_skew_s > self.limits.max_camera_skew_s:
+                raise RuntimeError(f"camera skew: {cloud.max_camera_skew_s:.3f}s")
+            if abs(state_sample.joint_stamp_s - cloud.fused_stamp_s) > self.limits.max_state_cloud_skew_s:
+                raise RuntimeError("state/point-cloud timestamp skew too large")
+            self._source_failures = 0
+            self.history.append(cloud.points, state_sample.state32)
+            points, states = self.history.arrays()
+            phase = "inference"
+            infer_started = time.monotonic()
+            chunk = np.asarray(self.policy.predict(points, states), dtype=np.float32)
+            inference_s = time.monotonic() - infer_started
+            if inference_s > self.limits.inference_timeout_s:
+                return self._fault_result(
+                    FaultCode.INFERENCE_TIMEOUT,
+                    f"inference {inference_s:.3f}s",
+                    record,
+                    state_sample=state_sample,
+                )
+            if chunk.ndim != 2 or chunk.shape[1] != RL100_ACTION_DIM or chunk.shape[0] < 1:
+                return self._fault_result(
+                    FaultCode.ACTION_SHAPE,
+                    f"policy chunk shape {chunk.shape}",
+                    record,
+                    state_sample=state_sample,
+                )
+            if not np.isfinite(chunk).all():
+                return self._fault_result(
+                    FaultCode.ACTION_NAN,
+                    "policy chunk has NaN/Inf",
+                    record,
+                    state_sample=state_sample,
+                )
+            raw_action = chunk[0]
+            safe = self.safety.check(raw_action, state_sample.state32)
+            record.update(
+                {
+                    "contract": RL100_TOPIC_NATIVE_CONTRACT,
+                    "state_stamps": [state_sample.joint_stamp_s, state_sample.hand_stamp_s, cloud.fused_stamp_s],
+                    "ages_s": [state_sample.joint_age_s, state_sample.hand_age_s, cloud.oldest_age_s],
+                    "inference_s": inference_s,
+                    "raw_action": raw_action.tolist(),
+                    "limited_action": safe.command.limited_action26.tolist(),
+                    "arm14_deg": safe.command.arm14_deg.tolist(),
+                    "hand12_raw": safe.command.hand12_raw.tolist(),
+                    "clip_mask": safe.command.clip_mask26.tolist(),
+                    "predicted_chunk": chunk.tolist(),
+                    "history_padded": self.history.padded_on_start,
+                    "safety_clipped": safe.clipped,
+                    "valid_points": cloud.valid_points,
+                }
+            )
+            if not safe.ok:
+                return self._fault_result(safe.fault_code, safe.reason, record, state_sample=state_sample)
+            if not self.shadow_mode:
+                phase = "publish"
+                self.publisher.publish(safe.command)
+                record["published"] = True
+            record["loop_s"] = time.monotonic() - started
+            self.state = DeployState.SHADOW if self.shadow_mode else DeployState.RUNNING
+            return self._result(FaultCode.NONE, "", record)
+        except Exception as exc:  # noqa: BLE001
+            self._source_failures += 1
+            if self._source_failures < self.limits.max_consecutive_source_failures:
+                return self._result(FaultCode.STALE_OBSERVATION, str(exc), record)
+            return self._fault_result(
+                FaultCode.STALE_OBSERVATION if phase == "source" else FaultCode.SDK_EXCEPTION,
+                str(exc),
+                record,
+                state_sample=state_sample,
+            )
+
+    def _fault(
+        self,
+        code: FaultCode,
+        reason: str,
+        *,
+        state_sample: Any | None = None,
+    ) -> None:
+        self.state = DeployState.FAULT
+        self.history.clear()
+        if (
+            state_sample is not None
+            and not self.shadow_mode
+            and self.limits.fault_hold_once_if_state_fresh
+            and not self._fault_hold_sent
+        ):
+            try:
+                hold = self.safety.hold_command(state_sample.state32)  # single final measured hold
+                self.publisher.publish(hold)
+                self._fault_hold_sent = True
+            except Exception:  # noqa: BLE001
+                self._fault_hold_sent = True
+
+    def _fault_result(
+        self,
+        code: FaultCode,
+        reason: str,
+        record: dict[str, Any],
+        *,
+        state_sample: Any | None = None,
+    ) -> RL100TopicTickResult:
+        self._fault(code, reason, state_sample=state_sample)
+        return self._result(code, reason, record)
+
+    def _result(self, code: FaultCode, reason: str, record: dict[str, Any]) -> RL100TopicTickResult:
+        record.update({"state": self.state.value, "fault_code": code.value, "reason": reason})
+        if self.audit_sink is not None:
+            self.audit_sink(record)
+        return RL100TopicTickResult(self.state, bool(record.get("published")), code, reason, record)
