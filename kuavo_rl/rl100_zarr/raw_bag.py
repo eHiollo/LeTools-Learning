@@ -360,7 +360,9 @@ def _load_tf_buffer(bag: Any) -> Any:
         import tf2_ros
     except Exception as exc:  # pragma: no cover - robot-side dependency
         raise RuntimeError("offline rosbag conversion requires rospy and tf2_ros") from exc
-    buffer = tf2_ros.Buffer(cache_time=rospy.Duration(3600.0))
+    # Offline conversion must not query a live ROS master.  ``debug=True``
+    # makes tf2_ros probe the ``~tf2_frames`` service during construction.
+    buffer = tf2_ros.Buffer(cache_time=rospy.Duration(3600.0), debug=False)
     count = 0
     for topic in ("/tf_static", "/tf"):
         for _, msg, _ in bag.read_messages(topics=[topic]):
