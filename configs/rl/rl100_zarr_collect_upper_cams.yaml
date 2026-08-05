@@ -38,25 +38,28 @@ workspace:
 
 cameras:
   - name: head_cam_h
-    depth_topic: /camera/depth/image_raw
+    depth_topic: /camera/depth/image_raw/compressedDepth
     camera_info_topic: /camera/depth/camera_info
     frame_id: camera_color_optical_frame
-    depth_msg_type: image
+    depth_msg_type: compressed_depth
     color_topic: /camera/color/image_raw/compressed
+    color_camera_info_topic: /camera/color/camera_info
     enabled: true
   - name: wrist_cam_l
-    depth_topic: /left_wrist_camera/depth/image_rect_raw
+    depth_topic: /left_wrist_camera/depth/image_rect_raw/compressedDepth
     camera_info_topic: /left_wrist_camera/depth/camera_info
     frame_id: left_wrist_camera_depth_optical_frame
-    depth_msg_type: image
+    depth_msg_type: compressed_depth
     color_topic: /left_wrist_camera/color/image_raw/compressed
+    color_camera_info_topic: /left_wrist_camera/color/camera_info
     enabled: true
   - name: wrist_cam_r
-    depth_topic: /right_wrist_camera/depth/image_rect_raw
+    depth_topic: /right_wrist_camera/depth/image_rect_raw/compressedDepth
     camera_info_topic: /right_wrist_camera/depth/camera_info
     frame_id: right_wrist_camera_depth_optical_frame
-    depth_msg_type: image
+    depth_msg_type: compressed_depth
     color_topic: /right_wrist_camera/color/image_raw/compressed
+    color_camera_info_topic: /right_wrist_camera/color/camera_info
     enabled: true
 
 require_all_cameras: true

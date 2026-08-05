@@ -117,7 +117,15 @@ def test_raw_bag_topics_include_rebuild_sources():
         cfg.hand_command_topic,
     } <= set(topics)
     assert "/tf" in topics and "/tf_static" in topics
-    assert all(camera.depth_topic in topics for camera in cfg.cameras if camera.enabled)
+    for camera in cfg.cameras:
+        if not camera.enabled:
+            continue
+        assert camera.depth_msg_type == "compressed_depth"
+        assert "compressedDepth" in camera.depth_topic
+        assert camera.depth_topic in topics
+        assert camera.camera_info_topic in topics
+        assert camera.color_topic in topics
+        assert camera.color_camera_info_topic in topics
 
 
 def test_empty_pointcloud_hard_fail():

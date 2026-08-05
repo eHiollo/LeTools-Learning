@@ -42,6 +42,8 @@ def raw_bag_topics(config: RL100CollectConfig) -> list[str]:
             topics.extend((camera.depth_topic, camera.camera_info_topic))
             if camera.color_topic:
                 topics.append(camera.color_topic)
+            if camera.color_camera_info_topic:
+                topics.append(camera.color_camera_info_topic)
     return list(dict.fromkeys(str(topic) for topic in topics if topic))
 
 

@@ -46,6 +46,8 @@ class CameraPCConfig:
     depth_msg_type: str = "compressed_depth"
     # Optional RGB compressed topic for replay/annotation (not consumed by RL-100 training).
     color_topic: str = ""
+    # Optional RGB calibration topic for offline RGB/depth consumers.
+    color_camera_info_topic: str = ""
 
 
 def default_cameras() -> list[CameraPCConfig]:
@@ -292,6 +294,7 @@ class RL100CollectConfig:
                     enabled=bool(c.get("enabled", True)),
                     depth_msg_type=str(c.get("depth_msg_type", "compressed_depth")),
                     color_topic=str(c.get("color_topic", "")),
+                    color_camera_info_topic=str(c.get("color_camera_info_topic", "")),
                 )
                 for c in cams_raw
             ]
