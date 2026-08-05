@@ -22,6 +22,14 @@ fi
 source "${HOME}/miniforge3/etc/profile.d/conda.sh"
 conda activate letools-rl
 
+# Prioritise conda's libstdc++ over the system one. ROS noetic's cv_bridge
+# pulls in libicui18n from the conda env, which needs CXXABI_1.3.15; the system
+# libstdc++ on this aarch64 box only goes up to 1.3.12, so without this
+# cv_bridge.imgmsg_to_cv2() raises ImportError and every depth frame fails to
+# decode (bag→zarr conversion silently returns None). Must be set before ROS
+# setup is sourced so ROS libs resolve against the newer libstdc++.
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+
 set +u
 # shellcheck disable=SC1091
 source /opt/ros/noetic/setup.bash
