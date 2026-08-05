@@ -1,13 +1,14 @@
 <!-- HIL upper-machine cameras.
-     Head: Orbbec @ 30 Hz (color+depth).
-     Wrists: RealSense D405 depth-only @ 30 Hz, 848x480.
-       - Color disabled (RL-100 zarr only needs depth for point clouds).
+     Head: Orbbec @ 10 Hz (color+depth).
+     Wrists: RealSense D405 @ 30 Hz, 848x480 (depth+color).
+       - D405 does not support 10 Hz; driver falls back to 30 Hz.
+       - Color enabled for RGB recording alongside depth.
        - initial_reset + respawn to handle D405 nodelet bond-break issue.
      Serials: LEFT_WRIST_CAMERA_SERIAL_NO / RIGHT_WRIST_CAMERA_SERIAL_NO -->
 <launch>
   <!-- Head Orbbec -->
-  <arg name="color_fps" default="30"/>
-  <arg name="depth_fps" default="30"/>
+  <arg name="color_fps" default="10"/>
+  <arg name="depth_fps" default="10"/>
   <!-- Wrists -->
   <arg name="wrist_fps" default="30"/>
   <arg name="wrist_width" default="848"/>
@@ -29,7 +30,10 @@
       <arg name="depth_width" value="$(arg wrist_width)"/>
       <arg name="depth_height" value="$(arg wrist_height)"/>
       <arg name="depth_fps" value="$(arg wrist_fps)"/>
-      <arg name="enable_color" value="false"/>
+      <arg name="enable_color" value="true"/>
+      <arg name="color_width" value="$(arg wrist_width)"/>
+      <arg name="color_height" value="$(arg wrist_height)"/>
+      <arg name="color_fps" value="30"/>
       <arg name="enable_pointcloud" value="false"/>
       <arg name="align_depth" value="false"/>
       <arg name="initial_reset" value="true"/>
@@ -45,7 +49,10 @@
       <arg name="depth_width" value="$(arg wrist_width)"/>
       <arg name="depth_height" value="$(arg wrist_height)"/>
       <arg name="depth_fps" value="$(arg wrist_fps)"/>
-      <arg name="enable_color" value="false"/>
+      <arg name="enable_color" value="true"/>
+      <arg name="color_width" value="$(arg wrist_width)"/>
+      <arg name="color_height" value="$(arg wrist_height)"/>
+      <arg name="color_fps" value="30"/>
       <arg name="enable_pointcloud" value="false"/>
       <arg name="align_depth" value="false"/>
       <arg name="initial_reset" value="true"/>

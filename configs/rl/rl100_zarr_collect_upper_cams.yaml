@@ -42,18 +42,21 @@ cameras:
     camera_info_topic: /camera/depth/camera_info
     frame_id: camera_color_optical_frame
     depth_msg_type: image
+    color_topic: /camera/color/image_raw/compressed
     enabled: true
   - name: wrist_cam_l
     depth_topic: /left_wrist_camera/depth/image_rect_raw
     camera_info_topic: /left_wrist_camera/depth/camera_info
     frame_id: left_wrist_camera_depth_optical_frame
     depth_msg_type: image
+    color_topic: /left_wrist_camera/color/image_raw/compressed
     enabled: true
   - name: wrist_cam_r
     depth_topic: /right_wrist_camera/depth/image_rect_raw
     camera_info_topic: /right_wrist_camera/depth/camera_info
     frame_id: right_wrist_camera_depth_optical_frame
     depth_msg_type: image
+    color_topic: /right_wrist_camera/color/image_raw/compressed
     enabled: true
 
 require_all_cameras: true
