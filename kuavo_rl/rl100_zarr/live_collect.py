@@ -702,7 +702,9 @@ def _record_one_raw_episode(
     except Exception as exc:  # noqa: BLE001
         record_rc = -9
         _say(f"{tag}  raw rosbag stop failed: {exc}")
-    bag_ready = handle.bag_path.is_file() and handle.bag_path.stat().st_size > 0
+    bag_ready = recorder.wait_for_bag(handle)
+    if not bag_ready:
+        _say(f"{tag}  raw bag finalize timeout: {handle.bag_path}")
     status = (
         "saved"
         if result_type in {"success", "failure"} and steps > 0 and bag_ready and record_rc != -9

@@ -128,6 +128,28 @@ def test_raw_bag_topics_include_rebuild_sources():
         assert camera.color_camera_info_topic in topics
 
 
+def test_raw_bag_ready_waits_for_active_file_rename(tmp_path: Path):
+    import threading
+    import time
+
+    from kuavo_rl.rl100_zarr.raw_bag import wait_for_bag_ready
+
+    bag_path = tmp_path / "episode.bag"
+    active_path = bag_path.with_suffix(".bag.active")
+    active_path.write_bytes(b"complete")
+
+    def finalize() -> None:
+        time.sleep(0.03)
+        active_path.rename(bag_path)
+
+    thread = threading.Thread(target=finalize)
+    thread.start()
+    try:
+        assert wait_for_bag_ready(bag_path, timeout_s=0.5, poll_interval_s=0.01)
+    finally:
+        thread.join()
+
+
 def test_empty_pointcloud_hard_fail():
     with pytest.raises(RuntimeError, match="empty after workspace crop"):
         build_rl100_point_cloud(

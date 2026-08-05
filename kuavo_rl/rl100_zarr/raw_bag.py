@@ -47,6 +47,27 @@ def raw_bag_topics(config: RL100CollectConfig) -> list[str]:
     return list(dict.fromkeys(str(topic) for topic in topics if topic))
 
 
+def wait_for_bag_ready(
+    bag_path: str | Path,
+    *,
+    timeout_s: float,
+    poll_interval_s: float = 0.05,
+) -> bool:
+    """Wait for rosbag to finish renaming ``.bag.active`` to ``.bag``."""
+    path = Path(bag_path)
+    deadline = time.monotonic() + max(float(timeout_s), 0.0)
+    interval = max(float(poll_interval_s), 0.001)
+    while True:
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                return True
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
 @dataclass
 class RawBagHandle:
     episode_id: str
@@ -134,6 +155,13 @@ class RawRosbagRecorder:
         handle.stdout_file.close()
         handle.stderr_file.close()
         return int(process.returncode if process.returncode is not None else -9)
+
+    def wait_for_bag(self, handle: RawBagHandle) -> bool:
+        """Wait for rosbag's final ``.bag`` rename after the process exits."""
+        return wait_for_bag_ready(
+            handle.bag_path,
+            timeout_s=float(self.config.raw_bag_stop_timeout_s),
+        )
 
     @staticmethod
     def write_metadata(handle: RawBagHandle, payload: dict[str, Any]) -> Path:
