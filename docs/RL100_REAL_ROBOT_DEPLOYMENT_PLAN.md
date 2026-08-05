@@ -237,9 +237,11 @@ inference:
   deterministic: false
   distill2mean: false
   use_cm: auto             # auto 表示严格跟随 checkpoint cfg.policy.use_cm
-  execute_steps: 1         # 第一版必须为 1
-  control_hz: 10           # 与采集 fps 一致；若延迟不达标则只允许降低
-  timeout_s: 0.10
+  execute_steps: 4         # 当前 checkpoint 的 action horizon；每 tick 消费一个 action
+  action_buffer_size: 8    # 小缓冲，避免推理抖动导致动作断流
+  action_low_watermark: 2  # 低于该值时后台补充下一块
+  control_hz: 10           # 与采集 fps 一致；action 时间语义不变
+  timeout_s: 0.50          # 启动/空缓冲等待上限，不是每 tick 的同步推理硬门槛
   warmup_runs: 3
 
 observation:
@@ -294,8 +296,8 @@ logging:
   checkpoint 内嵌训练 YAML 为准，部署 YAML 不重复定义。
 - `pointcloud_config` 应复用采集 YAML，或者以后提取成采集和部署共同引用的独立配置块；不要复制
   三份相机/裁剪参数后分别维护。
-- `control_hz` 默认等于采集 `fps=10`。不允许高于采集频率；若模型延迟超过 100 ms，可降到
-  5 Hz 并重新做 shadow 验收。
+- `control_hz` 默认等于采集 `fps=10`。动作仍按10 Hz消费，不能因为推理较慢而把动作时间语义
+  降到5 Hz；模型在后台按低水位补充 action chunk，结果按推理延迟丢弃已过期的开头动作。
 - live 时 token 必须由操作者当次输入，不能长期写死在版本库。CLI 同时要求 `--confirm-live`。
 
 ## 5. 状态机和故障行为
@@ -315,10 +317,10 @@ INIT -> PREFLIGHT -> READY -> SHADOW
 - `READY`：至少收到一组新鲜且对齐的完整观测，并完成模型 warmup。
 - `SHADOW`：至少先连续运行规定步数，确认绝无 publish 调用。
 - `ARMED`：仅 live 子命令可进入；检查启动姿态、物理急停和操作者确认。
-- `RUNNING`：每 tick 重新推理，只执行首步。
+- `RUNNING`：每 tick 消费一个已缓存 action；action buffer 低水位时后台补充下一块。
 - `HOLD`：人工 pause 时保留当前姿态但停止继续推理；恢复前重新检查观测历史。
-- `FAULT`：NaN、维度变化、旧消息、TF/相机缺失、时间偏差、推理超时、连续限幅、SDK 异常或
-  急停触发。记录首个根因，停止产生新命令；不得自动恢复到 RUNNING。
+- `FAULT`：NaN、维度变化、旧消息、TF/相机缺失、时间偏差、action buffer 长时间耗尽、连续
+  限幅、SDK 异常或急停触发。记录首个根因，停止产生新命令；不得自动恢复到 RUNNING。
 
 ROS shutdown、Ctrl-C 和异常退出都要进入同一清理路径。信号处理器不执行复杂 ROS 操作，只设置
 stop event，由主循环完成安全退出。

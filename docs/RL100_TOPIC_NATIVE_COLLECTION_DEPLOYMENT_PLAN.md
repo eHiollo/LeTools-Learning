@@ -456,9 +456,11 @@ class RL100TopicCommandPublisher:
 - `velocity`、`effort` 第一版留空；不要用未经训练的值填充。
 - hand12 先 clip 到 `[0,100]`，再按明确规则 `round` 并转换为 `uint8`。
 - 两个消息使用同一控制 tick 的 ROS timestamp。
-- `execute_steps`、控制频率和 action horizon 全部来自部署 YAML。第一版 live 默认
-  `execute_steps: 1`，即每个预测 chunk 只执行第一个 action并同步重规划；shadow 必须先证明推理
-  p99 延迟能满足该频率，否则不得直接 live，需降低频率或按训练配置审查 chunk 执行策略。
+- `execute_steps`、控制频率和 action horizon 全部来自部署 YAML。当前 topic-native 部署按训练的
+  10 Hz 消费 action，每次推理保留一个小 chunk（当前 checkpoint 为4步），并在队列低水位时由后台
+  线程补充下一块；模型推理不再阻塞每个控制 tick。结果返回时按实测推理延迟丢弃已经过去的 action，
+  队列耗尽只允许有限次实测 hold，随后进入 FAULT。下游 Kuavo 控制器负责其原生高频轨迹跟踪，
+  RL100 不再额外制造一套 ROS 100 Hz 插值器。
 
 ### 6.3 Safety
 
@@ -479,8 +481,9 @@ class RL100TopicCommandPublisher:
 - arm：现场批准的14维 rad上下限、相对 measured arm14 rad 的首步跳变、相邻命令跳变。
 - hand：12维 `[0,100]` 上下限、相邻命令最大变化量。
 
-任何 shape、NaN、state stale、point cloud stale、推理超时、连续限幅或 publisher 异常都进入
-FAULT，并停止产生新命令；不得回退到 action16 bridge。
+任何 shape、NaN、state stale、point cloud stale、action buffer 长时间耗尽、连续限幅或 publisher
+异常都进入 FAULT，并停止产生新命令；不得回退到 action16 bridge。单次慢推理只会消耗缓冲区，
+不会因为超过单个控制周期而立即误报故障。
 
 FAULT 处理必须显式配置，不能发布全零 action：若 arm state 仍新鲜且控制链正常，只允许发布一次
 “当前实测 arm hold + 最后安全 hand hold”，随后停更并等待人工复位；若状态已 stale、通信异常或
@@ -562,9 +565,13 @@ publish:
                     arm_joint_4, arm_joint_5, arm_joint_6, arm_joint_7,
                     arm_joint_8, arm_joint_9, arm_joint_10, arm_joint_11,
                     arm_joint_12, arm_joint_13]
-control:
-  frequency_hz: 10
-  execute_steps: 1
+inference:
+  control_hz: 10
+  execute_steps: 4
+  action_buffer_size: 8
+  action_low_watermark: 2
+  timeout_s: 0.50
+safety:
   fault_hold_once_if_state_fresh: true
 ```
 
