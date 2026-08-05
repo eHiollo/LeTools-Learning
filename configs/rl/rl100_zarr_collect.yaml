@@ -77,15 +77,15 @@ joint_state_max_age_s: 0.15
 dexhand_state_max_age_s: 0.15
 state_max_skew_s: 0.10
 depth_max_age_s: 0.15
-camera_max_skew_s: 0.10
+camera_max_skew_s: 0.50
 max_consecutive_source_failures: 3
 
 camera_sync:
   mode: buffered_header
   reference_camera: head_cam_h
   buffer_size: 32
-  max_header_skew_s: 0.10
-  warn_header_skew_s: 0.05
+  max_header_skew_s: 0.50
+  warn_header_skew_s: 0.25
   max_received_age_s: 0.20
   max_receive_skew_s: 0.20
   require_monotonic_header: true

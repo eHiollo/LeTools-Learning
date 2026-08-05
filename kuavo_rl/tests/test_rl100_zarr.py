@@ -160,7 +160,7 @@ def test_default_config_aligns_real_collect():
     assert upper_cfg.hand_command_topic == "/control_robot_hand_position"
     assert upper_cfg.require_hand_motion is False
     assert upper_cfg.camera_sync_mode == "buffered_header"
-    assert upper_cfg.camera_max_header_skew_s == pytest.approx(0.10)
+    assert upper_cfg.camera_max_header_skew_s == pytest.approx(0.50)
 
 
 def test_episode_action_quality_rejects_hold_state_and_constant_gripper():

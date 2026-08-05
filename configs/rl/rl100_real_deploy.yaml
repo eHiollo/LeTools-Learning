@@ -33,14 +33,14 @@ observation:
   state_max_skew_s: 0.10
   depth_max_age_s: 0.15
   # Keep deployment aligned with the collection contract; revisit after data QA.
-  max_camera_skew_s: 2.00
+  max_camera_skew_s: 0.50
   max_state_cloud_skew_s: 0.10
   camera_sync:
     mode: buffered_header
     reference_camera: head_cam_h
     buffer_size: 32
-    max_header_skew_s: 0.10
-    warn_header_skew_s: 0.05
+    max_header_skew_s: 0.50
+    warn_header_skew_s: 0.25
     max_received_age_s: 0.20
     max_receive_skew_s: 0.20
     require_monotonic_header: true
