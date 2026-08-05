@@ -27,7 +27,7 @@ dexhand_state_dim: 12
 
 # RL-100-style sparse terminal reward shaping
 lambda_penalty: 0.05
-smooth_penalty: 0.0
+smooth_penalty: 0.0001
 max_episode_len: 2000
 
 base_frame: base_link

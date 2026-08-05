@@ -21,7 +21,7 @@ raw_joint_dim: 20
 dexhand_state_dim: 12
 
 lambda_penalty: 0.05
-smooth_penalty: 0.0
+smooth_penalty: 0.0001
 max_episode_len: 2000
 
 base_frame: base_link
