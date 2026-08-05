@@ -135,6 +135,19 @@ class RosTeleopAdapter(TeleopAdapter):
             raise ValueError(f"reference action must be {ACTION_DIM}-D")
         self._last_action = a.copy()
 
+    def last_gripper_command(self) -> tuple[float, float]:
+        """Last hand-command gripper values, hold-last when stream is stale.
+
+        /dexhand/state sensor readings are unreliable for RL-100 collection
+        (sparse / low-rate), so the gripper columns of state are taken from
+        the operator's hand command (/control_robot_hand_position) instead.
+        _latest_hand retains the last received command until a new one arrives,
+        which gives hold-last behaviour across brief demand-driven gaps.
+        """
+        if self._latest_hand is None:
+            return 0.0, 0.0
+        return float(self._latest_hand[0]), float(self._latest_hand[1])
+
     def set_claw_values(self, left: float, right: float) -> None:
         self._last_action[7] = float(np.clip(left, 0.0, 1.0))
         self._last_action[15] = float(np.clip(right, 0.0, 1.0))

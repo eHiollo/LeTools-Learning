@@ -498,12 +498,13 @@ def _record_one_episode(
             break
 
         # Record state every frame. env.step still polls teleop for B labels.
+        # Gripper: /dexhand/state sensor readings are unreliable (sparse/low-rate),
+        # so overwrite state[7] & state[15] with the operator's hand command
+        # (/control_robot_hand_position), hold-last across demand-driven gaps.
         state_t = np.asarray(obs["observation.state"], dtype=np.float32).copy()
-        # Gripper: if hand command is fresh, keep actual value; else use open (0.0).
-        cmd_status = teleop.command_stream_status()
-        if not cmd_status.get("hand_ready", False):
-            state_t[7] = 0.0   # left gripper open
-            state_t[15] = 0.0  # right gripper open
+        grip_l, grip_r = teleop.last_gripper_command()
+        state_t[7] = grip_l
+        state_t[15] = grip_r
         hold = np.asarray(runner.select_action(obs).action, dtype=np.float32)
         obs, _, term, trunc, info = env.step(hold)
         teleop.set_reference_action(obs["observation.state"])
