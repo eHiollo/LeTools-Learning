@@ -18,6 +18,10 @@ only_success: false
 
 fps: 10
 num_points: 1024
+collection_mode: raw_rosbag
+raw_bag_root: null
+raw_bag_lz4: true
+raw_bag_stop_timeout_s: 15.0
 state_dim: 32
 action_dim: 26
 arm_command_dim: 14

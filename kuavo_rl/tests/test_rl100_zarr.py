@@ -15,6 +15,7 @@ from kuavo_rl.rl100_zarr.pointcloud import (
     depth_to_point_cloud,
     downsample_fps,
 )
+from kuavo_rl.rl100_zarr.raw_bag import decimate_reference_timestamps, raw_bag_topics
 from kuavo_rl.rl100_zarr.reward import assign_episode_rewards, should_keep_episode
 from kuavo_rl.rl100_zarr.schema import NUM_POINTS, ZarrEpisodeBuffers
 from kuavo_rl.rl100_zarr.staging import build_zarr_from_episode_dir, load_episode_npz, save_episode_npz
@@ -96,6 +97,29 @@ def test_fuse_three_cams_to_rl100_shape():
     assert out.shape == (NUM_POINTS, 3)
 
 
+def test_raw_bag_reference_decimation_is_time_based():
+    stamps = decimate_reference_timestamps([0.0, 0.03, 0.10, 0.19, 0.20, 0.31], 10.0)
+    np.testing.assert_allclose(stamps, [0.0, 0.10, 0.20, 0.31])
+
+
+def test_raw_bag_topics_include_rebuild_sources():
+    from kuavo_rl.rl100_zarr.config import load_rl100_collect_config
+
+    cfg = load_rl100_collect_config("configs/rl/rl100_zarr_collect_upper_cams.yaml")
+    topics = raw_bag_topics(cfg)
+    assert cfg.collection_mode == "raw_rosbag"
+    assert cfg.raw_bag_dir().name == "raw_bags"
+    assert cfg.staging_episode_dir().name == "raw_episodes"
+    assert {
+        cfg.sensors_topic,
+        cfg.dexhand_state_topic,
+        cfg.arm_traj_topic,
+        cfg.hand_command_topic,
+    } <= set(topics)
+    assert "/tf" in topics and "/tf_static" in topics
+    assert all(camera.depth_topic in topics for camera in cfg.cameras if camera.enabled)
+
+
 def test_empty_pointcloud_hard_fail():
     with pytest.raises(RuntimeError, match="empty after workspace crop"):
         build_rl100_point_cloud(
@@ -159,6 +183,7 @@ def test_default_config_aligns_real_collect():
     assert upper_cfg.only_success is True
     assert upper_cfg.hand_command_topic == "/control_robot_hand_position"
     assert upper_cfg.require_hand_motion is False
+    assert upper_cfg.collection_mode == "raw_rosbag"
     assert upper_cfg.camera_sync_mode == "buffered_header"
     assert upper_cfg.camera_max_header_skew_s == pytest.approx(0.50)
 

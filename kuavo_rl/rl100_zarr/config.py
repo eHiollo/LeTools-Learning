@@ -86,6 +86,13 @@ class RL100CollectConfig:
     only_success: bool = False
     fps: float = 10.0
     num_points: int = NUM_POINTS
+    # Brain-style collection: record raw ROS messages first, then align and
+    # build point clouds offline. Keep online_pointcloud only as an explicit
+    # fallback for old experiments.
+    collection_mode: str = "raw_rosbag"
+    raw_bag_root: str | None = None
+    raw_bag_lz4: bool = True
+    raw_bag_stop_timeout_s: float = 15.0
     state_dim: int = STATE_DIM
     action_dim: int = ACTION_DIM
     arm_command_dim: int = RL100_ARM_COMMAND_DIM
@@ -159,11 +166,23 @@ class RL100CollectConfig:
     def zarr_path(self) -> Path:
         return self.output_dir() / self.zarr_name
 
+    def raw_bag_dir(self) -> Path:
+        return Path(self.raw_bag_root) if self.raw_bag_root else self.output_dir() / "raw_bags"
+
+    def staging_episode_dir(self) -> Path:
+        # Keep raw-bag conversions separate from legacy online NPZs.
+        name = "raw_episodes" if self.collection_mode == "raw_rosbag" else "episodes"
+        return self.output_dir() / name
+
     def validate_contract(self) -> None:
         if self.contract != RL100_TOPIC_NATIVE_CONTRACT:
             raise ValueError(f"RL-100 collection requires contract={RL100_TOPIC_NATIVE_CONTRACT}")
         if self.state_dim != STATE_DIM or self.action_dim != ACTION_DIM:
             raise ValueError(f"RL-100 topic-native collection requires state/action {STATE_DIM}/{ACTION_DIM}")
+        if self.collection_mode not in {"raw_rosbag", "online_pointcloud"}:
+            raise ValueError("collection_mode must be raw_rosbag or online_pointcloud")
+        if self.raw_bag_stop_timeout_s <= 0.0:
+            raise ValueError("raw_bag_stop_timeout_s must be positive")
         if self.state_dim != RL100_STATE_DIM or self.action_dim != RL100_ACTION_DIM:
             raise ValueError("RL-100 topic-native collection requires state/action 32/26")
         if self.arm_command_dim != RL100_ARM_COMMAND_DIM or self.hand_command_dim != RL100_HAND_COMMAND_DIM:
@@ -282,6 +301,12 @@ class RL100CollectConfig:
             only_success=bool(raw.get("only_success", False)),
             fps=float(raw.get("fps", 10.0)),
             num_points=int(raw.get("num_points", NUM_POINTS)),
+            collection_mode=str(raw.get("collection_mode", "raw_rosbag")),
+            raw_bag_root=(
+                None if raw.get("raw_bag_root") is None else str(raw.get("raw_bag_root"))
+            ),
+            raw_bag_lz4=bool(raw.get("raw_bag_lz4", True)),
+            raw_bag_stop_timeout_s=float(raw.get("raw_bag_stop_timeout_s", 15.0)),
             state_dim=int(raw.get("state_dim", STATE_DIM)),
             action_dim=int(raw.get("action_dim", ACTION_DIM)),
             arm_command_dim=int(raw.get("arm_command_dim", RL100_ARM_COMMAND_DIM)),

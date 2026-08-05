@@ -9,7 +9,7 @@ Examples::
   # Merge staged episode NPZs into data/rl100/<task>/demo.zarr
   python scripts/rl/collect_rl100_zarr.py build --config configs/rl/rl100_zarr_collect.yaml
 
-  # Live VR collect on real robot (requires ROS + depth/tf + --confirm-live)
+  # Live VR collect on real robot; raw ROS messages are written first.
   python scripts/rl/collect_rl100_zarr.py collect --config configs/rl/rl100_zarr_collect.yaml --confirm-live
 """
 
@@ -46,6 +46,8 @@ def _zarr_attrs(cfg, *, smoke: bool = False) -> dict[str, object]:
         "state_dim": cfg.state_dim,
         "action_dim": cfg.action_dim,
         "smooth_penalty": cfg.smooth_penalty,
+        "collection_mode": cfg.collection_mode,
+        "raw_bag_dir": str(cfg.raw_bag_dir()),
         "camera_sync": {
             "label": (
                 "UNSYNCHRONIZED_LEGACY"
@@ -107,7 +109,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     out = {
         "task": cfg.task,
         "zarr_path": str(cfg.zarr_path()),
-        "episode_dir": str(cfg.output_dir() / "episodes"),
+        "episode_dir": str(cfg.staging_episode_dir()),
         "num_points": cfg.num_points,
         "state_dim": cfg.state_dim,
         "action_dim": cfg.action_dim,
@@ -116,6 +118,8 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         "env_config": cfg.env_config,
         "require_all_cameras": cfg.require_all_cameras,
         "fail_on_empty_pointcloud": cfg.fail_on_empty_pointcloud,
+        "collection_mode": cfg.collection_mode,
+        "raw_bag_dir": str(cfg.raw_bag_dir()),
         "camera_sync": {
             "label": (
                 "UNSYNCHRONIZED_LEGACY"
@@ -259,9 +263,21 @@ def cmd_smoke(args: argparse.Namespace) -> int:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
+    cfg = _load_cfg(args)
+    if cfg.collection_mode == "raw_rosbag":
+        from kuavo_rl.rl100_zarr.raw_bag import build_zarr_from_raw_bags
+
+        report = build_zarr_from_raw_bags(
+            cfg,
+            raw_bag_dir=args.raw_bag_dir,
+            episode_dir=args.episode_dir,
+            attrs=_zarr_attrs(cfg),
+        )
+        _print(report)
+        return 0
+
     from kuavo_rl.rl100_zarr.staging import build_zarr_from_episode_dir
 
-    cfg = _load_cfg(args)
     ep_dir = Path(args.episode_dir) if args.episode_dir else (cfg.output_dir() / "episodes")
     report = build_zarr_from_episode_dir(
         ep_dir,
@@ -360,18 +376,24 @@ def cmd_collect(args: argparse.Namespace) -> int:
     report = run_live_collect_session(cfg)
     _print(report)
     if args.build_after and report.get("episode_dir"):
-        from kuavo_rl.rl100_zarr.staging import build_zarr_from_episode_dir
+        if cfg.collection_mode == "raw_rosbag":
+            from kuavo_rl.rl100_zarr.raw_bag import build_zarr_from_raw_bags
 
-        built = build_zarr_from_episode_dir(
-            report["episode_dir"],
-            cfg.zarr_path(),
-            only_success=cfg.only_success,
-            overwrite=True,
-            lambda_penalty=cfg.lambda_penalty,
-            smooth_penalty=cfg.smooth_penalty,
-            max_episode_len=cfg.max_episode_len,
-            attrs=_zarr_attrs(cfg),
-        )
+            cfg.overwrite = True
+            built = build_zarr_from_raw_bags(cfg, attrs=_zarr_attrs(cfg))
+        else:
+            from kuavo_rl.rl100_zarr.staging import build_zarr_from_episode_dir
+
+            built = build_zarr_from_episode_dir(
+                report["episode_dir"],
+                cfg.zarr_path(),
+                only_success=cfg.only_success,
+                overwrite=True,
+                lambda_penalty=cfg.lambda_penalty,
+                smooth_penalty=cfg.smooth_penalty,
+                max_episode_len=cfg.max_episode_len,
+                attrs=_zarr_attrs(cfg),
+            )
         _print({"build": built})
     return 0
 
@@ -403,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
     sb = sub.add_parser("build", help="Merge episode NPZs into RL-100 zarr")
     sb.add_argument("--task")
     sb.add_argument("--episode-dir")
+    sb.add_argument("--raw-bag-dir")
     sb.add_argument("--output-root")
     sb.add_argument("--zarr-name")
     sb.add_argument("--overwrite", action="store_true")

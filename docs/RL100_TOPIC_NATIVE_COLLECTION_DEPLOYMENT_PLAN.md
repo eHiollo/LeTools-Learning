@@ -6,6 +6,11 @@
 本方案替代当前 `state16/action16`、Qiangnao 1-DoF 压缩以及
 `action[t] = state[t+1]` 的临时方案。实机 ROS 话题、控制模式和现场限位仍需按文档中的验收步骤确认。
 
+实机采集的执行链路采用 Brain 风格原始 rosbag 模式：采集期间只异步记录相机、状态、command、
+`/tf` 和 `/tf_static` 原始消息；episode 结束后再按参考相机时间戳对齐到 YAML 的 10 Hz，最后生成
+点云和 topic-native NPZ/Zarr。文档后续关于 cache、state/action 契约和质量审计的规则仍然适用；
+`online_pointcloud` 仅作为显式回退模式保留。
+
 ## 1. 已锁定的最终契约
 
 ### 1.1 Observation

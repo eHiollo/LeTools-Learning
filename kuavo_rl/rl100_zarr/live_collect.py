@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 
 from kuavo_rl.rl100_zarr.config import RL100CollectConfig
+from kuavo_rl.rl100_zarr.raw_bag import RawRosbagRecorder, raw_bag_topics
 from kuavo_rl.rl100_zarr.ros_depth import CameraSyncError, DepthPointCloudHub
 from kuavo_rl.rl100_zarr.ros_state import TopicStateHub
 from kuavo_rl.rl100_zarr.staging import save_episode_npz
@@ -261,7 +262,7 @@ def _make_kuavo_gym(deploy_config: Path, *, max_episode_steps: int):
 
 
 def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
-    """Long-running VR session: RESET → RECORD → B success/fail → save NPZ."""
+    """Long-running VR session: raw rosbag by default, online cloud as fallback."""
     from kuavo_rl.ros_msg_compat import ensure_foot_pose_6d_msgs
 
     ensure_foot_pose_6d_msgs()
@@ -291,7 +292,8 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     if not rospy.core.is_initialized():
         rospy.init_node("rl100_zarr_collect", anonymous=True)
 
-    episode_dir = config.output_dir() / "episodes"
+    raw_mode = config.collection_mode == "raw_rosbag"
+    episode_dir = config.staging_episode_dir()
     episode_dir.mkdir(parents=True, exist_ok=True)
 
     deploy_config = Path(config.deploy_config)
@@ -352,15 +354,22 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     )
     _quiet_robot_logs()
 
-    pc_hub = DepthPointCloudHub(config)
-    pc_hub.start()
-    pf = pc_hub.preflight(timeout_s=8.0)
-    _say(f"pointcloud preflight: {pf}")
-    if not pf.get("ok"):
-        pc_hub.close()
-        teleop.close()
-        env.close()
-        raise RuntimeError(f"depth/tf preflight failed: {pf}")
+    pc_hub: DepthPointCloudHub | None = None
+    raw_recorder: RawRosbagRecorder | None = None
+    if raw_mode:
+        raw_recorder = RawRosbagRecorder(config)
+        _say(f"raw rosbag mode: {raw_recorder.root}")
+        _say(f"raw topics: {raw_bag_topics(config)}")
+    else:
+        pc_hub = DepthPointCloudHub(config)
+        pc_hub.start()
+        pf = pc_hub.preflight(timeout_s=8.0)
+        _say(f"pointcloud preflight: {pf}")
+        if not pf.get("ok"):
+            pc_hub.close()
+            teleop.close()
+            env.close()
+            raise RuntimeError(f"depth/tf preflight failed: {pf}")
 
     state_hub = TopicStateHub(
         sensors_topic=config.sensors_topic,
@@ -371,7 +380,8 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
     _say(f"raw state preflight: {state_pf}")
     if not state_pf.get("ok"):
         state_hub.close()
-        pc_hub.close()
+        if pc_hub is not None:
+            pc_hub.close()
         teleop.close()
         env.close()
         raise RuntimeError(f"raw state preflight failed: {state_pf}")
@@ -473,17 +483,31 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
                 break
 
             attempt += 1
-            ep = _record_one_episode(
-                env=env,
-                runner=runner,
-                teleop=teleop,
-                event_src=event_src,
-                pc_hub=pc_hub,
-                state_hub=state_hub,
-                config=config,
-                episode_dir=episode_dir,
-                attempt=attempt,
-            )
+            if raw_mode:
+                assert raw_recorder is not None
+                ep = _record_one_raw_episode(
+                    env=env,
+                    runner=runner,
+                    teleop=teleop,
+                    event_src=event_src,
+                    recorder=raw_recorder,
+                    state_hub=state_hub,
+                    config=config,
+                    attempt=attempt,
+                )
+            else:
+                assert pc_hub is not None
+                ep = _record_one_episode(
+                    env=env,
+                    runner=runner,
+                    teleop=teleop,
+                    event_src=event_src,
+                    pc_hub=pc_hub,
+                    state_hub=state_hub,
+                    config=config,
+                    episode_dir=episode_dir,
+                    attempt=attempt,
+                )
             if ep.status == "saved" and ep.result_type == "success":
                 n_saved_success += 1
             elif ep.status == "saved" and ep.result_type == "failure":
@@ -523,7 +547,8 @@ def run_live_collect_session(config: RL100CollectConfig) -> dict[str, Any]:
         if event_src is not None:
             event_src.close()
         state_hub.close()
-        pc_hub.close()
+        if pc_hub is not None:
+            pc_hub.close()
         teleop.close()
         env.close()
 
@@ -580,6 +605,138 @@ def _action_from_step_info(info: dict | None) -> np.ndarray | None:
     if raw is not None and info.get("is_intervention"):
         return np.asarray(raw, dtype=np.float32).reshape(-1)
     return None
+
+
+def _record_one_raw_episode(
+    *,
+    env,
+    runner,
+    teleop,
+    event_src,
+    recorder: RawRosbagRecorder,
+    state_hub: TopicStateHub,
+    config: RL100CollectConfig,
+    attempt: int = 1,
+) -> LiveEpisodeResult:
+    """Record one episode without doing any online depth/point-cloud work."""
+    eid = uuid.uuid4().hex[:12]
+    tag = f"[RECORD #{attempt}]"
+    result_type = "abort"
+    stop_reason = "unknown"
+    steps = 0
+    handle = None
+    began_topic_episode = False
+
+    try:
+        handle = recorder.start(eid)
+        _say(f"{tag}  id={eid}  raw bag={handle.bag_path}")
+        obs, _ = env.reset()
+        teleop.set_reference_action(obs["observation.state"])
+        teleop.reset()
+        teleop.set_label_gestures_enabled(True)
+        initial = state_hub.snapshot(
+            config.joint_state_max_age_s,
+            config.dexhand_state_max_age_s,
+            config.state_max_skew_s,
+        )
+        default_hand = np.asarray(config.hand_default, dtype=np.float32)
+        default_error = float(np.max(np.abs(initial.dexhand_position12 - default_hand)))
+        if default_error > float(config.hand_default_tolerance):
+            stop_reason = "hand_default_mismatch"
+            _say(
+                f"{tag}  hand is not at configured default: max error={default_error:.3f} "
+                f"> tolerance={config.hand_default_tolerance:.3f}; restore hand and retry"
+            )
+        else:
+            teleop.begin_topic_native_episode(initial.raw_joint_q20[RL100_ARM_SLICE_RAW20])
+            began_topic_episode = True
+            dt = 1.0 / max(config.fps, 1.0)
+            next_tick = time.monotonic()
+            t0 = next_tick
+            while True:
+                if steps >= max(int(config.live_max_steps), 1):
+                    stop_reason = "max_steps"
+                    break
+                if time.monotonic() - t0 >= float(config.live_max_duration_s):
+                    stop_reason = "max_duration"
+                    break
+
+                ev = event_src.poll() if event_src is not None else None
+                event_type = getattr(ev, "event_type", None) if ev is not None else None
+                if event_type == "right_stick_left":
+                    result_type, stop_reason = "abort", "rerecord"
+                    _say(f"{tag}  Y double-click → rerecord (discard)")
+                    break
+                if event_type == "right_stick_right":
+                    _say(f"{tag}  Y click ignored — end with B (short=success, long=failure)")
+                elif event_type in {"right_stick_down", "collection_complete"}:
+                    _say(f"{tag}  Y long ignored — end with B first, then Y long in RESET")
+
+                hold = np.asarray(runner.select_action(obs).action, dtype=np.float32)
+                obs, _, term, trunc, info = env.step(hold)
+                teleop.set_reference_action(obs["observation.state"])
+                steps += 1
+                labeled = _label_from_teleop_info(info)
+                if labeled is not None:
+                    result_type, stop_reason = labeled
+                    _say(f"{tag}  B → {result_type} — ending episode")
+                    break
+                if term or trunc:
+                    result_type = "abort"
+                    stop_reason = str(info.get("fault_code", "env_terminate"))
+                    break
+
+                next_tick += dt
+                now = time.monotonic()
+                if next_tick > now:
+                    time.sleep(next_tick - now)
+                else:
+                    next_tick = now
+    except Exception as exc:  # noqa: BLE001
+        result_type = "abort"
+        stop_reason = "raw_record_error"
+        _say(f"{tag}  raw record failed: {exc}")
+    finally:
+        if began_topic_episode:
+            teleop.end_topic_native_episode()
+
+    if handle is None:
+        return LiveEpisodeResult("discarded", eid, steps, result_type, None, stop_reason)
+
+    try:
+        record_rc = recorder.stop(handle)
+    except Exception as exc:  # noqa: BLE001
+        record_rc = -9
+        _say(f"{tag}  raw rosbag stop failed: {exc}")
+    bag_ready = handle.bag_path.is_file() and handle.bag_path.stat().st_size > 0
+    status = (
+        "saved"
+        if result_type in {"success", "failure"} and steps > 0 and bag_ready and record_rc != -9
+        else "discarded"
+    )
+    recorder.write_metadata(
+        handle,
+        {
+            "status": status,
+            "result_type": result_type,
+            "stop_reason": stop_reason,
+            "steps": steps,
+            "record_rc": record_rc,
+            "task": config.task,
+            "contract": config.contract,
+            "state_dim": config.state_dim,
+            "action_dim": config.action_dim,
+            "target_fps": config.fps,
+        },
+    )
+    return LiveEpisodeResult(
+        status=status,
+        episode_id=eid,
+        steps=steps,
+        result_type=result_type,
+        path=str(handle.bag_path),
+        stop_reason=stop_reason,
+    )
 
 
 def _record_one_episode(

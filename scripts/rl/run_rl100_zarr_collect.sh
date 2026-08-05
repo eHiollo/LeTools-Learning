@@ -3,7 +3,8 @@
 #
 # Usage:
 #   bash scripts/rl/run_rl100_zarr_collect.sh preflight --check-ros
-#   bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live --build-after
+#   bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live
+#   bash scripts/rl/run_rl100_zarr_collect.sh build --overwrite
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
