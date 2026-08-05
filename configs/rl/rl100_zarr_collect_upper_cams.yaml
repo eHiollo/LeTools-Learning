@@ -68,7 +68,8 @@ joint_state_max_age_s: 0.15
 dexhand_state_max_age_s: 0.15
 state_max_skew_s: 0.10
 depth_max_age_s: 0.15
-camera_max_skew_s: 0.10
+# Current upper-camera header skew is accepted during collection; analyze it in data QA.
+camera_max_skew_s: 0.50
 max_consecutive_source_failures: 3
 
 # Never write hold-state fallbacks as BC labels. For this grasp task at least
