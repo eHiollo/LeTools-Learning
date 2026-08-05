@@ -232,6 +232,11 @@ def _make_kuavo_gym(deploy_config: Path, *, max_episode_steps: int):
     return gym.make(
         env_name,
         max_episode_steps=int(max_episode_steps),
+        # KuavoBaseRosEnv adds timestamp metadata to reset()/get_obs(), while
+        # its legacy observation_space only declares observation.state.  The
+        # RL100 adapter normalizes and validates the final observation contract
+        # below, so the legacy passive checker must not reject reset first.
+        disable_env_checker=True,
         config=deploy_cfg,
     )
 
