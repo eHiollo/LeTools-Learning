@@ -3,11 +3,28 @@
 Parallel feature on branch `dev/rl100_record`. Does **not** change HIL recording
 defaults (`hil_topics_*.yaml`, `collect_hil_dataset.py`, ACT runners).
 
-真机 upper cams 用专用配置：
-`configs/rl/rl100_zarr_collect_upper_cams.yaml`
-（深度 topic = `/camera` + `/left|right_wrist_camera`；gym state = `deploy_real_rl100_upper.yaml`）。
+## 配置文件位置
 
-Brain `/cam_h|l|r` 深度仍用 `configs/rl/rl100_zarr_collect.yaml`。
+| 用途 | 路径 |
+|------|------|
+| **采集主配置（默认）** | [`configs/rl/rl100_zarr_collect_upper_cams.yaml`](../../configs/rl/rl100_zarr_collect_upper_cams.yaml) |
+| Brain `/cam_h\|l\|r` 深度（备用） | [`configs/rl/rl100_zarr_collect.yaml`](../../configs/rl/rl100_zarr_collect.yaml) |
+| 相机 launch | [`configs/launch/hil_upper_cams.launch`](../../configs/launch/hil_upper_cams.launch) |
+| 机器本地（ROS_IP / 腕部序列号，gitignore） | `configs/rl/local/env.sh`（模板：`env.sh.example`） |
+
+入口脚本 `scripts/rl/run_rl100_zarr_collect.sh` 默认读取 upper cams 配置：
+
+```bash
+# 等价于：
+# RL100_CFG=configs/rl/rl100_zarr_collect_upper_cams.yaml
+bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live
+# 换配置：
+RL100_CFG=configs/rl/rl100_zarr_collect.yaml bash scripts/rl/run_rl100_zarr_collect.sh collect --confirm-live
+```
+
+主配置里包含：`task` / `collection_mode` / 相机 `depth_topic`·`color_topic` / state·action 维度 / workspace / 标签手势等。
+
+`zarr_name` 可省略：默认自动为 `{task}.zarr`（输出 `data/rl100/<task>/<task>.zarr`）。只需改 `task` 即可换数据集目录与 zarr 文件名。
 
 ## What it produces
 
@@ -119,6 +136,8 @@ http://192.168.26.12:8080/stream_viewer?topic=/camera/cam2/image_raw/compressed
 ```
 
 ### 终端 B — 采集
+
+配置文件：`configs/rl/rl100_zarr_collect_upper_cams.yaml`（可用环境变量 `RL100_CFG` 覆盖）。
 
 ```bash
 conda activate letools-rl

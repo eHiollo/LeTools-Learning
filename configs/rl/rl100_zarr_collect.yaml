@@ -5,12 +5,11 @@
 #
 # Output layout:
 #   data/rl100/<task>/episodes/*.npz   # per-episode staging
-#   data/rl100/<task>/demo.zarr          # merged RL-100 dataset
+#   data/rl100/<task>/<task>.zarr        # merged RL-100 dataset (zarr_name defaults to task)
 
 task: box_to_chest_v1
 contract: rl100_topic_native_v1
 output_root: data/rl100
-zarr_name: demo.zarr
 overwrite: false
 
 # Keep failures by default (HIL B long press). Use CLI --only-success to drop them.

@@ -85,7 +85,8 @@ class RL100CollectConfig:
     contract: str = RL100_TOPIC_NATIVE_CONTRACT
     task: str = "box_to_chest_v1"
     output_root: str = "data/rl100"
-    zarr_name: str = "demo.zarr"
+    # Empty → derived as ``{task}.zarr`` in ``zarr_path()`` / load.
+    zarr_name: str = ""
     overwrite: bool = False
     only_success: bool = False
     fps: float = 10.0
@@ -167,8 +168,16 @@ class RL100CollectConfig:
     def output_dir(self) -> Path:
         return Path(self.output_root) / self.task
 
+    def resolved_zarr_name(self) -> str:
+        name = str(self.zarr_name or "").strip()
+        if not name:
+            name = f"{self.task}.zarr"
+        elif not name.endswith(".zarr"):
+            name = f"{name}.zarr"
+        return name
+
     def zarr_path(self) -> Path:
-        return self.output_dir() / self.zarr_name
+        return self.output_dir() / self.resolved_zarr_name()
 
     def raw_bag_dir(self) -> Path:
         return Path(self.raw_bag_root) if self.raw_bag_root else self.output_dir() / "raw_bags"
@@ -298,11 +307,20 @@ class RL100CollectConfig:
                 )
                 for c in cams_raw
             ]
+        task = str(raw.get("task", "box_to_chest_v1")).strip() or "box_to_chest_v1"
+        zarr_raw = raw.get("zarr_name", None)
+        # Default: match task. Explicit yaml/CLI value still overrides.
+        if zarr_raw is None or str(zarr_raw).strip() == "":
+            zarr_name = f"{task}.zarr"
+        else:
+            zarr_name = str(zarr_raw).strip()
+            if not zarr_name.endswith(".zarr"):
+                zarr_name = f"{zarr_name}.zarr"
         config = cls(
             contract=str(raw.get("contract", RL100_TOPIC_NATIVE_CONTRACT)),
-            task=str(raw.get("task", "box_to_chest_v1")),
+            task=task,
             output_root=str(raw.get("output_root", "data/rl100")),
-            zarr_name=str(raw.get("zarr_name", "demo.zarr")),
+            zarr_name=zarr_name,
             overwrite=bool(raw.get("overwrite", False)),
             only_success=bool(raw.get("only_success", False)),
             fps=float(raw.get("fps", 10.0)),

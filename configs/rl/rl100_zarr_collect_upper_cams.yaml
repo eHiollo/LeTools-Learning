@@ -3,10 +3,10 @@
 # Topics from Orbbec head (/camera) + RealSense wrists (/left|right_wrist_camera).
 # Use with: roslaunch configs/launch/hil_upper_cams.launch
 
-task: grasp_8_4_v2
+task: grasp_8_4_v3
 contract: rl100_topic_native_v1
 output_root: data/rl100
-zarr_name: grasp_8_4_v2.zarr
+# zarr_name defaults to ``{task}.zarr``; override only if you need a different name.
 overwrite: false
 # Diffusion BC should not imitate failed demonstrations.
 only_success: true
