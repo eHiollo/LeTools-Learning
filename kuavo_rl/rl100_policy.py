@@ -8,6 +8,7 @@ must construct the policy from the checkpoint rather than from a second YAML.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -48,7 +49,7 @@ def _shape(meta: Any, path: tuple[str, ...]) -> tuple[int, ...]:
         value = _get(value, key)
         if value is None:
             raise ValueError(f"checkpoint shape_meta missing {'.'.join(path)}")
-    if not isinstance(value, (list, tuple)):
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise ValueError(f"checkpoint shape {'.'.join(path)} must be a list, got {value!r}")
     return tuple(int(v) for v in value)
 

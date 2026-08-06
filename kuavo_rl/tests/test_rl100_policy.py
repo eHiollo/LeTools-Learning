@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from omegaconf import OmegaConf
 
 from kuavo_rl.rl100_policy import (
     normalize_module_prefix,
@@ -25,6 +26,11 @@ def test_validate_real_robot_shape_meta():
     bad["obs"]["agent_pos"]["shape"] = [14]
     with pytest.raises(ValueError, match="agent_pos"):
         validate_shape_meta(bad)
+
+
+def test_validate_real_robot_shape_meta_accepts_hydra_lists():
+    shape_meta = OmegaConf.create(_shape_meta())
+    assert validate_shape_meta(shape_meta) == (1024, 3, 32, 26)
 
 
 def test_select_ema_and_explicit_missing_error():
