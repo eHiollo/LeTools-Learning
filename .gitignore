@@ -240,3 +240,4 @@ third_party/kuavo_brain/
 
 # Independent nested git checkout (not a submodule). Train remotely; Orin uses for inference.
 third_party/RL-100/
+.worktrees/
