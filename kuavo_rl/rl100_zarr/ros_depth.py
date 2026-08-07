@@ -584,7 +584,14 @@ class DepthPointCloudHub:
             transform = transforms.get(name)
             if transform is None:
                 continue
-            clouds.append(depth_to_point_cloud(frame.depth_m, frame.intrinsics, transform))
+            clouds.append(
+                depth_to_point_cloud(
+                    frame.depth_m,
+                    frame.intrinsics,
+                    transform,
+                    candidate_count=self.config.pointcloud_candidate_pixels_per_camera,
+                )
+            )
         if not clouds:
             raise CameraSyncError("no_cloud", "no camera produced a point cloud")
         x_range, y_range, z_range = self.config.workspace_ranges()

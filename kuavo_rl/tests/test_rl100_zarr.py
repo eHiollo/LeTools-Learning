@@ -10,6 +10,7 @@ import pytest
 from kuavo_rl.contracts import RL100_ACTION_DIM as ACTION_DIM, RL100_STATE_DIM as STATE_DIM
 from kuavo_rl.rl100_zarr.episode import append_labeled_episode
 from kuavo_rl.rl100_zarr.live_collect import episode_action_quality_errors
+from kuavo_rl.rl100_zarr.config import RL100CollectConfig, load_rl100_collect_config
 from kuavo_rl.rl100_zarr.pointcloud import (
     build_rl100_point_cloud,
     depth_to_point_cloud,
@@ -102,6 +103,17 @@ def test_depth_to_point_cloud_nonpositive_budget_preserves_full_resolution():
     depth = np.ones((10, 20), dtype=np.float32)
     points = depth_to_point_cloud(depth, (10, 10, 10, 5), candidate_count=0)
     assert points.shape == (200, 3)
+
+
+def test_upper_camera_config_bounds_pointcloud_candidates():
+    cfg = load_rl100_collect_config("configs/rl/rl100_zarr_collect_upper_cams.yaml")
+    assert cfg.pointcloud_candidate_pixels_per_camera == 16384
+
+
+def test_candidate_budget_rejects_negative_values():
+    cfg = RL100CollectConfig(pointcloud_candidate_pixels_per_camera=-1)
+    with pytest.raises(ValueError, match="pointcloud_candidate_pixels_per_camera"):
+        cfg.validate_contract()
 
 
 def test_fuse_three_cams_to_rl100_shape():

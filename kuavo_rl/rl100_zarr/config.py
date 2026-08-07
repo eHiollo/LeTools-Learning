@@ -91,6 +91,7 @@ class RL100CollectConfig:
     only_success: bool = False
     fps: float = 10.0
     num_points: int = NUM_POINTS
+    pointcloud_candidate_pixels_per_camera: int = 0
     # Brain-style collection: record raw ROS messages first, then align and
     # build point clouds offline. Keep online_pointcloud only as an explicit
     # fallback for old experiments.
@@ -194,6 +195,8 @@ class RL100CollectConfig:
             raise ValueError(f"RL-100 topic-native collection requires state/action {STATE_DIM}/{ACTION_DIM}")
         if self.collection_mode not in {"raw_rosbag", "online_pointcloud"}:
             raise ValueError("collection_mode must be raw_rosbag or online_pointcloud")
+        if self.pointcloud_candidate_pixels_per_camera < 0:
+            raise ValueError("pointcloud_candidate_pixels_per_camera must be non-negative")
         if self.raw_bag_stop_timeout_s <= 0.0:
             raise ValueError("raw_bag_stop_timeout_s must be positive")
         if self.state_dim != RL100_STATE_DIM or self.action_dim != RL100_ACTION_DIM:
@@ -325,6 +328,9 @@ class RL100CollectConfig:
             only_success=bool(raw.get("only_success", False)),
             fps=float(raw.get("fps", 10.0)),
             num_points=int(raw.get("num_points", NUM_POINTS)),
+            pointcloud_candidate_pixels_per_camera=int(
+                raw.get("pointcloud_candidate_pixels_per_camera", 0)
+            ),
             collection_mode=str(raw.get("collection_mode", "raw_rosbag")),
             raw_bag_root=(
                 None if raw.get("raw_bag_root") is None else str(raw.get("raw_bag_root"))
