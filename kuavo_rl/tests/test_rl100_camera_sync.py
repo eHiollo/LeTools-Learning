@@ -7,9 +7,17 @@ from kuavo_rl.rl100_zarr.ros_depth import (
     CameraSyncError,
     DepthPointCloudHub,
     TimedDepthFrame,
+    depth_subscriber_kwargs,
     select_synchronized_frames,
 )
 from kuavo_rl.rl100_zarr.config import CameraPCConfig, RL100CollectConfig
+
+
+def test_depth_subscriber_can_buffer_multiple_full_resolution_frames():
+    kwargs = depth_subscriber_kwargs()
+    wrist_depth_bytes = 848 * 480 * 2
+    assert kwargs["queue_size"] == 1
+    assert kwargs["buff_size"] >= 2 * wrist_depth_bytes
 
 
 def _frame(

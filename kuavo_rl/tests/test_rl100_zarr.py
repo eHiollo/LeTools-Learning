@@ -120,8 +120,10 @@ def test_raw_bag_topics_include_rebuild_sources():
     for camera in cfg.cameras:
         if not camera.enabled:
             continue
-        assert camera.depth_msg_type == "compressed_depth"
-        assert "compressedDepth" in camera.depth_topic
+        # Real-time deployment must consume raw depth.  Large compressedDepth
+        # frames can queue behind policy inference and arrive with old headers.
+        assert camera.depth_msg_type == "image"
+        assert "compressedDepth" not in camera.depth_topic
         assert camera.depth_topic in topics
         assert camera.camera_info_topic in topics
         assert camera.color_topic in topics
@@ -209,13 +211,13 @@ def test_default_config_aligns_real_collect():
     upper_cfg = load_rl100_collect_config(
         "configs/rl/rl100_zarr_collect_upper_cams.yaml"
     )
-    assert upper_cfg.task == "grasp_8_4_v2"
+    assert upper_cfg.task == "grasp_8_4_v3"
     assert upper_cfg.only_success is True
     assert upper_cfg.hand_command_topic == "/control_robot_hand_position"
     assert upper_cfg.require_hand_motion is False
     assert upper_cfg.collection_mode == "raw_rosbag"
     assert upper_cfg.camera_sync_mode == "buffered_header"
-    assert upper_cfg.camera_max_header_skew_s == pytest.approx(0.50)
+    assert upper_cfg.camera_max_header_skew_s == pytest.approx(0.20)
 
 
 def test_episode_action_quality_rejects_hold_state_and_constant_gripper():

@@ -20,6 +20,13 @@ from kuavo_rl.rl100_zarr.config import RL100CollectConfig
 from kuavo_rl.rl100_zarr.pointcloud import build_rl100_point_cloud, depth_to_point_cloud
 
 _PNG_MAGIC = bytes([137, 80, 78, 71, 13, 10, 26, 10])
+_DEPTH_SUBSCRIBER_BUFF_SIZE = 16 * 1024 * 1024
+
+
+def depth_subscriber_kwargs() -> dict[str, int]:
+    """Keep only the latest depth frame without a small TCP receive backlog."""
+
+    return {"queue_size": 1, "buff_size": _DEPTH_SUBSCRIBER_BUFF_SIZE}
 
 
 class CameraSyncError(RuntimeError):
@@ -344,7 +351,12 @@ class DepthPointCloudHub:
                     "(use image or compressed_depth)"
                 )
             self._subs.append(
-                rospy.Subscriber(cam.depth_topic, depth_cls, callback=callback, queue_size=1)
+                rospy.Subscriber(
+                    cam.depth_topic,
+                    depth_cls,
+                    callback=callback,
+                    **depth_subscriber_kwargs(),
+                )
             )
             self._subs.append(
                 rospy.Subscriber(
