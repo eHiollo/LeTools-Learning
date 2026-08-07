@@ -10,7 +10,7 @@ defaults (`hil_topics_*.yaml`, `collect_hil_dataset.py`, ACT runners).
 | **采集主配置（默认）** | [`configs/rl/rl100_zarr_collect_upper_cams.yaml`](../../configs/rl/rl100_zarr_collect_upper_cams.yaml) |
 | Brain `/cam_h\|l\|r` 深度（备用） | [`configs/rl/rl100_zarr_collect.yaml`](../../configs/rl/rl100_zarr_collect.yaml) |
 | 相机 launch | [`configs/launch/hil_upper_cams.launch`](../../configs/launch/hil_upper_cams.launch) |
-| 机器本地（ROS_IP / 腕部序列号，gitignore） | `configs/rl/local/env.sh`（模板：`env.sh.example`） |
+| 机器本地（ROS_IP / 腕部序列号 / CUDA 暂存，gitignore） | `configs/rl/local/env.sh`（模板：`env.sh.example`） |
 
 入口脚本 `scripts/rl/run_rl100_zarr_collect.sh` 默认读取 upper cams 配置：
 
@@ -79,16 +79,21 @@ data/rl100/grasp_8_4_v2/grasp_8_4_v2.zarr
 
 **不要重复 `roslaunch hil_upper_cams.launch`**，否则节点名冲突互相踢掉。
 
-腕部相机序列号等机器特定配置统一放在 `configs/rl/local/env.sh`（gitignored），
-模板见 `configs/rl/local/env.sh.example`。首次使用：
+腕部相机序列号等机器特定配置推荐放在 `configs/rl/local/env.sh`（gitignored），
+模板见 `configs/rl/local/env.sh.example`。本机也可写在 `~/.bashrc`（已有
+`LEFT_WRIST_CAMERA_SERIAL_NO` / `RIGHT_WRIST_CAMERA_SERIAL_NO` 时，交互终端可直接用）。
+首次使用 env.sh：
 
 ```bash
 cp configs/rl/local/env.sh.example configs/rl/local/env.sh
 # 编辑 env.sh：填 ROS_MASTER_URI / ROS_IP / 两个腕部相机序列号
 # 查序列号：rs-enumerate-devices --compact | grep Serial
+# 若序列号已在 ~/.bashrc，可同步抄进 env.sh，供非交互脚本使用
 ```
 
-`run_rl100_zarr_collect.sh` 会自动 source 它；终端 A 的 roslaunch 需手动 `source`。
+`run_rl100_zarr_collect.sh` 与 `run_rl100_real.sh` 会自动 source `env.sh`；
+终端 A 的 roslaunch 若未走脚本，需手动 `source configs/rl/local/env.sh`
+（或依赖已加载的 `~/.bashrc`）。
 
 ## 终端顺序（真机 upper cams）
 
@@ -232,7 +237,22 @@ python scripts/rl/verify_joint_map.py --live
 - action 命令流不再回退为 measured state；缺失时硬失败，避免再次生成 hold-policy 数据
 - `kuavo_rl/ros_msg_compat.py`：只注入 SDK 缺的 footPose6D，**不要**把整包 SDK `kuavo_msgs` 前置到 `PYTHONPATH`（会弄坏 `/sensors_data_raw` MD5）
 - 若腕相机进程退出（`Bond broken` / `finished cleanly`），先停干净再只开一次终端 A，再 collect
-- ROS master：见 `configs/rl/local/env.sh`（`ROS_MASTER_URI` / `ROS_IP`），脚本与终端 A 均自动/手动 source
+- ROS master：见 `configs/rl/local/env.sh`（`ROS_MASTER_URI` / `ROS_IP`），脚本与终端 A 均自动/手动 source；腕部序列号也可来自 `~/.bashrc`
+
+## CUDA 11.4 暂存库（Orin / torch cuda=11.4 vs 系统 CUDA 12）
+
+本机 conda `torch 2.2.0` 按 **CUDA 11.4** 构建，而 JetPack 常只带 **CUDA 12**，直接
+`import torch` 会报缺 `libcudart.so.11.0` / `libcublas` / `libcudnn.so.8`。
+
+解决：把 CUDA 11.4 + cuDNN 8 共享库放到仓库内：
+
+```text
+.runtime_staging/cuda11.4/usr/local/cuda-11.4/targets/sbsa-linux/lib
+.runtime_staging/cuda11.4/usr/lib/aarch64-linux-gnu
+```
+
+`run_rl100_real.sh`（以及 `configs/rl/local/env.sh`）会在目录存在时自动把上述路径
+prepend 到 `LD_LIBRARY_PATH`，无需每次手动 `export`。
 
 ## libgomp static-TLS workaround（aarch64 / Tegra）
 
@@ -313,16 +333,22 @@ bash scripts/rl/run_rl100_real.sh shadow \
 
 ### RL-100 真机执行流程
 
-部署程序运行在能访问机器人 ROS master 的电脑上（Orin NX 或本地 GPU 电脑均可）。运行端先设置
-自己的 ROS 网络地址；`ROS_IP` 必须是运行策略电脑在机器人 ROS 网段中的地址：
+部署程序运行在能访问机器人 ROS master 的电脑上（Orin NX 或本地 GPU 电脑均可）。
+**推荐直接用** `scripts/rl/run_rl100_real.sh`：会自动 source `configs/rl/local/env.sh`、
+激活 `letools-rl`，并在存在时挂上 `.runtime_staging/cuda11.4`。
+
+`ROS_IP` 必须是运行策略电脑在机器人 ROS 网段中的地址。本机上位机示例
+（也可写在 `~/.bashrc` / `env.sh`，不必每次手敲）：
 
 ```bash
 export ROS_MASTER_URI=http://kuavo_master:11311
-export ROS_IP=<运行策略电脑的机器人网段IP>
-source /opt/ros/noetic/setup.bash
-source ~/kuavo_ros_application/devel/setup.bash  # 若该电脑有 Kuavo 工作空间
-conda activate letools-rl
+export ROS_IP=192.168.26.12
 cd ~/wjy/robot-il/LeTools-Learning
+# 可选：手动对齐环境（脚本已做同等操作）
+# source configs/rl/local/env.sh
+# source /opt/ros/noetic/setup.bash
+# source ~/kuavo_ros_application/devel/setup.bash
+# conda activate letools-rl
 ```
 
 确认机器人底层、三相机、TF 和控制话题已经启动。先在机器人端完成关节映射检查：
