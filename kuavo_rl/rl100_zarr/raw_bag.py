@@ -510,7 +510,12 @@ def _camera_clouds(
             continue
         try:
             pose = _lookup_pose(tf_buffer, config.base_frame, frame_id, timestamp)
-            cloud = depth_to_point_cloud(depth_m, intrinsics, pose)
+            cloud = depth_to_point_cloud(
+                depth_m,
+                intrinsics,
+                pose,
+                candidate_count=config.pointcloud_candidate_pixels_per_camera,
+            )
             cloud = crop_workspace(
                 cloud,
                 x_range=x_range,

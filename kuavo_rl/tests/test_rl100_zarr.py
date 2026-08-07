@@ -128,6 +128,48 @@ def test_raw_bag_reference_decimation_is_time_based():
     np.testing.assert_allclose(stamps, [0.0, 0.10, 0.20, 0.31])
 
 
+def test_raw_bag_camera_clouds_honor_candidate_budget(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from kuavo_rl.rl100_zarr import raw_bag
+    from kuavo_rl.rl100_zarr.config import CameraPCConfig
+
+    monkeypatch.setitem(sys.modules, "cv_bridge", SimpleNamespace(CvBridge=object))
+    monkeypatch.setattr(raw_bag, "_camera_info", lambda bag, topic: ((10, 10, 2, 2), "cam"))
+    message = SimpleNamespace(header=SimpleNamespace(frame_id="cam"))
+    monkeypatch.setattr(
+        raw_bag,
+        "_nearest_messages",
+        lambda bag, topic, targets: [(message, 0.0, 0.0, 0.0)],
+    )
+    monkeypatch.setattr(
+        raw_bag,
+        "_decode_depth",
+        lambda msg, camera, bridge: np.ones((4, 4), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        raw_bag,
+        "_lookup_pose",
+        lambda tf_buffer, base_frame, frame_id, timestamp: np.eye(4, dtype=np.float32),
+    )
+    config = RL100CollectConfig(
+        num_points=1,
+        pointcloud_candidate_pixels_per_camera=3,
+        workspace={
+            "x_range": [-10.0, 10.0],
+            "y_range": [-10.0, 10.0],
+            "z_range": [-10.0, 10.0],
+        },
+    )
+    camera = CameraPCConfig("cam", "/depth", "/info", frame_id="cam")
+
+    clouds = raw_bag._camera_clouds(object(), config, camera, [0.0], object())
+
+    assert clouds[0] is not None
+    assert clouds[0].points.shape == (3, 3)
+
+
 def test_raw_bag_topics_include_rebuild_sources():
     from kuavo_rl.rl100_zarr.config import load_rl100_collect_config
 
