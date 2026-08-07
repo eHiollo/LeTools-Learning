@@ -522,7 +522,10 @@ def _camera_clouds(
                 y_range=y_range,
                 z_range=z_range,
             )
-            cloud = _cap_points(cloud, max_camera_points)
+            # A configured candidate budget is the shared online/offline pool.
+            # Keep the legacy cap only for the unlimited compatibility path.
+            if config.pointcloud_candidate_pixels_per_camera <= 0:
+                cloud = _cap_points(cloud, max_camera_points)
         except Exception:
             output.append(None)
             continue

@@ -170,6 +170,51 @@ def test_raw_bag_camera_clouds_honor_candidate_budget(monkeypatch):
     assert clouds[0].points.shape == (3, 3)
 
 
+def test_raw_bag_bounded_cloud_matches_online_pool_above_legacy_cap(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from kuavo_rl.rl100_zarr import raw_bag
+    from kuavo_rl.rl100_zarr.config import CameraPCConfig
+    from kuavo_rl.rl100_zarr.pointcloud import depth_to_point_cloud
+
+    depth = np.ones((100, 100), dtype=np.float32)
+    intrinsics = (10.0, 10.0, 50.0, 50.0)
+    pose = np.eye(4, dtype=np.float32)
+    monkeypatch.setitem(sys.modules, "cv_bridge", SimpleNamespace(CvBridge=object))
+    monkeypatch.setattr(raw_bag, "_camera_info", lambda bag, topic: (intrinsics, "cam"))
+    message = SimpleNamespace(header=SimpleNamespace(frame_id="cam"))
+    monkeypatch.setattr(
+        raw_bag,
+        "_nearest_messages",
+        lambda bag, topic, targets: [(message, 0.0, 0.0, 0.0)],
+    )
+    monkeypatch.setattr(raw_bag, "_decode_depth", lambda msg, camera, bridge: depth)
+    monkeypatch.setattr(raw_bag, "_lookup_pose", lambda *args: pose)
+    config = RL100CollectConfig(
+        num_points=1024,
+        pointcloud_candidate_pixels_per_camera=5000,
+        workspace={
+            "x_range": [-100.0, 100.0],
+            "y_range": [-100.0, 100.0],
+            "z_range": [-100.0, 100.0],
+        },
+    )
+    camera = CameraPCConfig("cam", "/depth", "/info", frame_id="cam")
+
+    raw_cloud = raw_bag._camera_clouds(object(), config, camera, [0.0], object())[0]
+    online_cloud = depth_to_point_cloud(
+        depth,
+        intrinsics,
+        pose,
+        candidate_count=config.pointcloud_candidate_pixels_per_camera,
+    )
+
+    assert raw_cloud is not None
+    assert raw_cloud.points.shape == (5000, 3)
+    np.testing.assert_array_equal(raw_cloud.points, online_cloud)
+
+
 def test_raw_bag_topics_include_rebuild_sources():
     from kuavo_rl.rl100_zarr.config import load_rl100_collect_config
 
