@@ -865,6 +865,7 @@ class RL100TopicRealRunner:
                 )
             if abs(state_sample.joint_stamp_s - cloud.fused_stamp_s) > self.limits.max_state_cloud_skew_s:
                 raise RuntimeError("state/point-cloud timestamp skew too large")
+            record["pointcloud_generation_s"] = cloud.generation_s
             self._source_failures = 0
             self.history.append(cloud.points, state_sample.state32)
             points, states = self.history.arrays()

@@ -96,6 +96,7 @@ class PointCloudSample:
     camera_received_ages_s: dict[str, float] = field(default_factory=dict)
     generated_wall_s: float = 0.0
     generated_monotonic_s: float = 0.0
+    generation_s: float = 0.0
 
     @property
     def reference_stamp_s(self) -> float:
@@ -578,6 +579,7 @@ class DepthPointCloudHub:
         )
 
     def _fuse_bundle(self, bundle: SynchronizedDepthBundle, *, require_all: bool) -> PointCloudSample:
+        generation_started = time.monotonic()
         transforms = self._bundle_transforms(bundle, require_all=require_all)
         clouds: list[np.ndarray] = []
         for name, frame in bundle.frames.items():
@@ -621,6 +623,7 @@ class DepthPointCloudHub:
             camera_received_ages_s=bundle.camera_received_ages_s,
             generated_wall_s=generated_wall,
             generated_monotonic_s=generated_monotonic,
+            generation_s=max(0.0, generated_monotonic - generation_started),
         )
 
     def _bundle_transforms(

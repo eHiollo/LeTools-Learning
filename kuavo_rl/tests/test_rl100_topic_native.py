@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from kuavo_rl.contracts import (
     RL100_DEXHAND_JOINT_NAMES,
@@ -199,6 +200,7 @@ def _topic_runner(shadow: bool):
         max_camera_skew_s=0.0,
         camera_stamps={"cam": now},
         valid_points=1024,
+        generation_s=0.012,
     )
     runner = RL100TopicRealRunner(
         policy=_FakePolicy(),
@@ -219,6 +221,14 @@ def _topic_runner(shadow: bool):
     if not shadow:
         runner.arm_live()
     return runner, publisher
+
+
+def test_topic_runner_audits_pointcloud_generation_latency():
+    runner, _ = _topic_runner(True)
+
+    result = runner.tick()
+
+    assert result.record["pointcloud_generation_s"] == pytest.approx(0.012)
 
 
 def test_topic_runner_shadow_never_publishes_and_live_publishes_once():

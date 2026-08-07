@@ -166,3 +166,34 @@
 1. **相机实时同步 skew 偏大**：采集用离线同步，部署用实时同步，结构性差异导致 skew 更大。当前靠放宽阈值缓解，后续需改进同步策略。
 2. **推理速度慢**：DDIM 10 步 ~0.94s/次，action horizon 仅 4 步（0.4s），buffer 频繁耗尽后 hold。机器人运动不连续。后续可考虑用 CM 1 步推理或增大 action horizon。
 3. **`max_arm_step_rad: 0.02`**（1.15 度/步）非常保守，机器人运动很慢。后续可根据实际表现适当调大。
+
+---
+
+## 2026-08-07 点云限流与 60 秒 shadow 复测
+
+三路深度图原先会先反投影约 91.6 万像素，再从融合结果采样 1024 点，造成 CPU、内存带宽和临时数组压力。现在在反投影前按固定索引为每台相机选取最多 16384 个候选像素；在线融合和 raw-bag 离线转换共用 `pointcloud_candidate_pixels_per_camera`，最终训练/部署输入契约仍为有限 `float32 (1024, 3)`。
+
+自动化验证：
+
+```bash
+pytest -q kuavo_rl/tests/test_rl100_camera_sync.py \
+  kuavo_rl/tests/test_rl100_zarr.py \
+  kuavo_rl/tests/test_rl100_topic_executor.py \
+  kuavo_rl/tests/test_rl100_topic_native.py
+# 42 passed
+```
+
+隔离 checkpoint 基线（同一 Jetson）：冷启动 4.563 s，预热后 0.416 / 0.418 s。60 秒 shadow 使用 586 个循环样本和 45 次完成的推理，`published` 始终为 `false`：
+
+| 指标 | p50 | p95 | max |
+|---|---:|---:|---:|
+| 点云生成 | 34.2 ms | 58.6 ms | 82.6 ms |
+| 整机并发推理 | 1.249 s | 1.482 s | 1.499 s |
+| 相机 header skew | 14.3 ms | 22.0 ms | 22.0 ms |
+| 相机 receive skew | 31.5 ms | 41.2 ms | 43.4 ms |
+
+全程状态为 `SHADOW/NONE`，没有 source fault 或终止 fault。同步性已经稳定落在严格阈值内，不再需要此前 1.2 s 的宽松 skew 才能运行。点云 p95 接近但仍高于 50 ms 目标；更关键的是，并发推理远慢于 0.4 s action horizon。`tegrastats` 在该窗口内显示 RAM 约从 4.9 GB 增至 6.4 GB，SWAP 从 1111 MB 增至约 1149 MB，说明 10 步 DDIM 与三相机链路并发时存在明显内存压力。
+
+结论：此前约 0.9 s/次并非模型本身固定需要 0.9 s。模型单独预热仅约 0.417 s，但整机并发时因 70.8M 参数的 10 步 DDIM、三相机处理和换页竞争被放大到约 1.25 s。继续只调 ROS timeout 或 action buffer 不能解决吞吐问题。
+
+下一次训练建议优先生成可部署的 1 步 CM checkpoint：保留 DDIM 教师的 10 步训练，启用 `policy.use_cm=True`、`cm_inference_steps=1` 和 `distill_phase=after_offline`，部署前用 `inspect-checkpoint` 确认产物为 `use_cm: true`。RL-100 离线 3D 训练脚本原有拼写 `after_offlin` 不在训练入口允许值中，已改为 `after_offline`。在新 checkpoint 实测 p95 小于 0.4 s 前，不应宣称当前 4-step/10 Hz action horizon 可持续。
