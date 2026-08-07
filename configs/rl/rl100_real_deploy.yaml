@@ -4,7 +4,7 @@ contract: rl100_topic_native_v1
 state_dim: 32
 action_dim: 26
 checkpoint:
-  path: outputs/rl100/grasp_8_4_v2/checkpoints/latest.ckpt
+  path: third_party/RL-100/data/epoch=2900-test_mean_score=-0.000.ckpt
   device: cuda:0
   model_source: auto
 
@@ -62,9 +62,17 @@ publish:
                     arm_joint_12, arm_joint_13]
 
 safety:
-  # REQUIRED before live. Do not replace with broad [-pi, pi] placeholders.
-  arm_joint_low_rad: null
-  arm_joint_high_rad: null
+  # Empirical envelope from the 30-episode topic-native dataset:
+  # state raw joint_q[4:18] (rad) union action arm14_deg (deg -> rad).
+  # This is a conservative demo envelope, not the robot's mechanical limit.
+  arm_joint_low_rad: [-1.140217, -0.203979, -0.780370, -2.235270,
+                      -0.215930, -0.434978, -0.593412, -1.191048,
+                      -0.835366, -0.459989, -2.150153, -0.919109,
+                      -0.593412, -0.543650]
+  arm_joint_high_rad: [0.600001, 0.707139, 0.236752, 0.000000,
+                       0.832523, 0.593412, 0.593412, 0.413360,
+                       0.247863, 0.950259, 0.000000, 0.863529,
+                       0.810977, 0.593412]
   max_arm_step_rad: 0.02
   max_hand_step: 5.0
   max_arm_state_jump_rad: 0.05
