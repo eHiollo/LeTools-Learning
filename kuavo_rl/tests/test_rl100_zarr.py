@@ -90,6 +90,20 @@ def test_depth_to_pc_and_downsample():
     assert out.shape == (NUM_POINTS, 3)
 
 
+def test_depth_to_point_cloud_candidate_budget_is_bounded_and_deterministic():
+    depth = np.ones((100, 200), dtype=np.float32)
+    first = depth_to_point_cloud(depth, (100, 100, 100, 50), candidate_count=4096)
+    second = depth_to_point_cloud(depth, (100, 100, 100, 50), candidate_count=4096)
+    assert first.shape == (4096, 3)
+    np.testing.assert_array_equal(first, second)
+
+
+def test_depth_to_point_cloud_nonpositive_budget_preserves_full_resolution():
+    depth = np.ones((10, 20), dtype=np.float32)
+    points = depth_to_point_cloud(depth, (10, 10, 10, 5), candidate_count=0)
+    assert points.shape == (200, 3)
+
+
 def test_fuse_three_cams_to_rl100_shape():
     rng = np.random.default_rng(1)
     clouds = [rng.normal(size=(2000, 3)).astype(np.float32) for _ in range(3)]

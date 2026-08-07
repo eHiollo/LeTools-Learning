@@ -13,6 +13,7 @@ def depth_to_point_cloud(
     depth_m: np.ndarray,
     intrinsics: Sequence[float],
     camera_pose: np.ndarray | None = None,
+    candidate_count: int = 0,
     *,
     min_depth: float = 0.05,
     max_depth: float = 3.0,
@@ -27,14 +28,25 @@ def depth_to_point_cloud(
         raise ValueError(f"depth expected (H, W), got {depth.shape}")
     fx, fy, cx, cy = (float(x) for x in intrinsics)
     h, w = depth.shape
-    u, v = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
-    z = depth.reshape(-1)
+    total_pixels = h * w
+    if 0 < int(candidate_count) < total_pixels:
+        indices = np.linspace(
+            0, total_pixels - 1, int(candidate_count), dtype=np.int64
+        )
+        u = (indices % w).astype(np.float32)
+        v = (indices // w).astype(np.float32)
+        z = depth.reshape(-1)[indices]
+    else:
+        u, v = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+        u = u.reshape(-1)
+        v = v.reshape(-1)
+        z = depth.reshape(-1)
     valid = np.isfinite(z) & (z > float(min_depth)) & (z < float(max_depth))
     if not np.any(valid):
         return np.zeros((0, 3), dtype=np.float32)
 
-    u = u.reshape(-1)[valid]
-    v = v.reshape(-1)[valid]
+    u = u[valid]
+    v = v[valid]
     z = z[valid]
     x = (u - cx) * z / fx
     y = (v - cy) * z / fy
