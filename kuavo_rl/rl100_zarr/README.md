@@ -311,8 +311,83 @@ bash scripts/rl/run_rl100_real.sh shadow \
   --config configs/rl/rl100_real_deploy.yaml --max-steps 500
 ```
 
-只有完成部署方案中的逐级验收后，才可运行 `live`；它还要求 `--confirm-live`、
-`--physical-estop-ready` 和一次性 `--live-token`。不要用旧的
-`third_party/RL-100/data/grasp_8_4.zarr` 做训练或回放。
+### RL-100 真机执行流程
+
+部署程序运行在能访问机器人 ROS master 的电脑上（Orin NX 或本地 GPU 电脑均可）。运行端先设置
+自己的 ROS 网络地址；`ROS_IP` 必须是运行策略电脑在机器人 ROS 网段中的地址：
+
+```bash
+export ROS_MASTER_URI=http://kuavo_master:11311
+export ROS_IP=<运行策略电脑的机器人网段IP>
+source /opt/ros/noetic/setup.bash
+source ~/kuavo_ros_application/devel/setup.bash  # 若该电脑有 Kuavo 工作空间
+conda activate letools-rl
+cd ~/wjy/robot-il/LeTools-Learning
+```
+
+确认机器人底层、三相机、TF 和控制话题已经启动。先在机器人端完成关节映射检查：
+
+```bash
+python scripts/rl/verify_joint_map.py --live
+```
+
+然后按下面顺序执行，任何一步失败都不要进入 `live`：
+
+```bash
+# 1. 只加载 checkpoint 并做模型 warmup，不连接机器人控制
+bash scripts/rl/run_rl100_real.sh inspect-checkpoint \
+  --config configs/rl/rl100_real_deploy.yaml
+
+# 2. 检查状态、三相机点云、TF 和控制 topic subscriber，不发布动作、不切换手臂模式
+bash scripts/rl/run_rl100_real.sh ros-preflight \
+  --config configs/rl/rl100_real_deploy.yaml --duration-s 60
+
+# 3. shadow 推理：读取真机观测但永不发布动作，也不切换手臂控制模式
+bash scripts/rl/run_rl100_real.sh shadow \
+  --config configs/rl/rl100_real_deploy.yaml --max-steps 20 --duration-s 5
+```
+
+确认急停可用、机器人周围无人且允许策略发布后，先做一次一动作冒烟：
+
+```bash
+bash scripts/rl/run_rl100_real.sh live \
+  --config configs/rl/rl100_real_deploy.yaml \
+  --max-steps 1 --duration-s 1 --preflight-timeout-s 10 \
+  --confirm-live --physical-estop-ready --live-token rl100-live
+```
+
+冒烟通过后再运行完整的有限时长部署：
+
+```bash
+bash scripts/rl/run_rl100_real.sh live \
+  --config configs/rl/rl100_real_deploy.yaml \
+  --max-steps 200 --duration-s 20 --preflight-timeout-s 10 \
+  --confirm-live --physical-estop-ready --live-token rl100-live
+```
+
+`--live-token` 必须非空；如果 `configs/rl/rl100_real_deploy.yaml` 中配置了
+`mode.live_confirmation_token`，两者还必须完全一致。
+
+#### 手臂控制模式自动管理
+
+`live` 的控制模式生命周期如下，运行期间不需要再手动执行 `rosservice call`：
+
+```text
+ROS/模型/runner 预检通过
+  -> /wheel_arm_change_arm_ctrl_mode: control_mode=2（外部控制）
+  -> 发布 /kuavo_arm_traj 和 /control_robot_hand_position
+  -> 正常退出、Ctrl-C 或异常
+  -> 停止推理发布 -> control_mode=0（保持当前位置）
+```
+
+如果 mode `2` 设置失败，程序不会开始发布策略动作；如果 mode `2` 已成功设置，退出时会尽力恢复
+mode `0`，恢复失败会记录错误但不会覆盖原始故障。`shadow`、`ros-preflight`、
+`inspect-checkpoint` 和 `offline-replay` 都不会切换手臂控制模式。
+
+部署时继续使用 topic-native `state32/action26` 契约：state 为
+`/sensors_data_raw` 的 20 维关节 rad 加 `/dexhand/state` 的 12 维手部反馈；action 为
+`/kuavo_arm_traj` 的 14 维 degree 加 `/control_robot_hand_position` 的 12 维 0..100 手部命令。
+不要使用旧的 `third_party/RL-100/data/grasp_8_4.zarr` 做训练或回放。
+
 - Launch: `configs/launch/hil_upper_cams.launch`
 - Does not modify HIL topic profiles; `data/` is gitignored

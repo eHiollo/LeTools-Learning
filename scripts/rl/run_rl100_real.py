@@ -28,6 +28,33 @@ def _print(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
+def _set_wheel_arm_control_mode(mode: int) -> bool:
+    """Set the wheel-arm controller mode through the Kuavo ROS service."""
+
+    import rospy
+    from kuavo_msgs.srv import changeArmCtrlMode, changeArmCtrlModeRequest
+
+    service_name = "/wheel_arm_change_arm_ctrl_mode"
+    try:
+        rospy.wait_for_service(service_name, timeout=5.0)
+        client = rospy.ServiceProxy(service_name, changeArmCtrlMode)
+        request = changeArmCtrlModeRequest()
+        request.control_mode = int(mode)
+        response = client(request)
+        if not bool(response.result):
+            rospy.logerr(
+                "arm control mode %d rejected: %s",
+                int(mode),
+                getattr(response, "message", "unknown reason"),
+            )
+            return False
+        rospy.loginfo("arm control mode set to %d", int(mode))
+        return True
+    except (rospy.ROSException, rospy.ServiceException) as exc:
+        rospy.logerr("arm control mode service failed for mode %d: %s", int(mode), exc)
+        return False
+
+
 class JsonlAudit:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -319,12 +346,14 @@ def _check_live_arm(cfg, state_hub, publisher, args: argparse.Namespace) -> None
 
 
 def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
+    from kuavo_rl.arm_control_mode import ArmControlModeSession
     from kuavo_rl.rl100_deploy_config import load_rl100_deploy_config
     from kuavo_rl.rl100_real_runner import RL100TopicRealRunner
 
     cfg = load_rl100_deploy_config(args.config)
     components = None
     runner = None
+    arm_control_session = ArmControlModeSession(_set_wheel_arm_control_mode) if live else None
     try:
         preflight, components = _ros_preflight(cfg, timeout_s=float(args.preflight_timeout_s))
         if not preflight.get("ok"):
@@ -357,6 +386,7 @@ def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
         )
         runner.preflight()
         if live:
+            arm_control_session.enter()
             runner.arm_live()
         max_steps = min(int(args.max_steps), int(cfg.raw["safety"].get("max_episode_steps", 200)))
         duration_s = min(float(args.duration_s), float(cfg.raw["safety"].get("max_episode_duration_s", 20.0)))
@@ -382,13 +412,23 @@ def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
         })
         return 0 if results and results[-1].state.value != "FAULT" else 2
     finally:
-        if runner is not None:
-            runner.close()
-        if components is not None:
-            hub, state_hub, publisher = components
-            hub.close()
-            state_hub.close()
-            publisher.close()
+        try:
+            if runner is not None:
+                runner.close()
+        finally:
+            if arm_control_session is not None:
+                try:
+                    arm_control_session.restore()
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"[rl100] failed to restore arm control mode: {exc}",
+                        file=sys.stderr,
+                    )
+            if components is not None:
+                hub, state_hub, publisher = components
+                hub.close()
+                state_hub.close()
+                publisher.close()
 
 
 def cmd_offline_replay(args: argparse.Namespace) -> int:
