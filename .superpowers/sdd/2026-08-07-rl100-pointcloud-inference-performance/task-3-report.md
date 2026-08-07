@@ -33,3 +33,9 @@ During the measured window tegrastats showed RAM growth from roughly 4.9 GB to 6
 ## Conclusion
 
 Candidate-bounded back-projection removes the dominant point-cloud allocation path, but the warmed isolated 0.417 s model becomes roughly 1.25 s under full concurrent load. A one-step CM checkpoint produced by corrected after-offline distillation is the appropriate next training target; increasing timeout alone cannot make the 0.4-second action horizon sustainable.
+
+## Clean-HEAD A/B follow-up
+
+After final review found the raw-bag legacy 4,096-point cap and provenance gaps, commit `a9751bd` removed that cap for bounded mode and added online/raw-bag pool parity coverage above 4,096 points. Identical 60-second shadow runs were then repeated from that commit.
+
+Bounded/unbounded point-cloud p95 was 71.7/292.2 ms and inference p95 was 1.994/3.452 s. The bounded run had no faults; the unbounded run recorded `STALE_OBSERVATION`. Both published no commands. Raw evidence is retained under `logs/rl100_performance_a9751bd` in the main workspace.

@@ -183,16 +183,18 @@ pytest -q kuavo_rl/tests/test_rl100_camera_sync.py \
 # 42 passed
 ```
 
-隔离 checkpoint 基线（同一 Jetson）：冷启动 4.563 s，预热后 0.416 / 0.418 s。60 秒 shadow 使用 586 个循环样本和 45 次完成的推理，`published` 始终为 `false`：
+隔离 checkpoint 基线（同一 Jetson）：冷启动 4.563 s，预热后 0.416 / 0.418 s。初次诊断 run 显示限流后点云 p95 为 58.6 ms、整机推理 p95 为 1.482 s。为消除 dirty worktree 和不同 step 限制的干扰，又在干净提交 `a9751bd` 上用相同 60 秒/1000-step 条件连续执行 bounded/unbounded A/B；两次 `published` 始终为 `false`：
 
-| 指标 | p50 | p95 | max |
-|---|---:|---:|---:|
-| 点云生成 | 34.2 ms | 58.6 ms | 82.6 ms |
-| 整机并发推理 | 1.249 s | 1.482 s | 1.499 s |
-| 相机 header skew | 14.3 ms | 22.0 ms | 22.0 ms |
-| 相机 receive skew | 31.5 ms | 41.2 ms | 43.4 ms |
+| 指标 | bounded 16384 p50 / p95 / max | unbounded p50 / p95 / max |
+|---|---:|---:|
+| 点云生成 | 45.4 / 71.7 / 105.3 ms | 201.1 / 292.2 / 853.2 ms |
+| 整机并发推理 | 1.732 / 1.994 / 2.046 s | 2.654 / 3.452 / 3.654 s |
+| 相机 header skew | 15.7 / 18.4 / 18.4 ms | 17.7 / 18.7 / 29.9 ms |
+| 相机 receive skew | 32.8 / 39.7 / 41.6 ms | 32.5 / 49.7 / 55.4 ms |
 
-全程状态为 `SHADOW/NONE`，没有 source fault 或终止 fault。同步性已经稳定落在严格阈值内，不再需要此前 1.2 s 的宽松 skew 才能运行。点云 p95 接近但仍高于 50 ms 目标；更关键的是，并发推理远慢于 0.4 s action horizon。`tegrastats` 在该窗口内显示 RAM 约从 4.9 GB 增至 6.4 GB，SWAP 从 1111 MB 增至约 1149 MB，说明 10 步 DDIM 与三相机链路并发时存在明显内存压力。
+bounded run 全程为 `SHADOW/NONE`；unbounded run 出现过 `STALE_OBSERVATION`，但最终仍为 `SHADOW/NONE`。同步性稳定落在严格阈值内。限流把点云 p95 从 292.2 ms 降到 71.7 ms，并把同机推理 p95 从 3.452 s 降到 1.994 s，证明预反投影限流显著减少资源竞争；但点云仍高于 50 ms 目标，推理也远慢于 0.4 s action horizon。两次 `tegrastats` 均显示 SWAP 增长（bounded 约 1140→1222 MB，unbounded 约 1216→1274 MB），所以内存压力仍未达到验收线。
+
+A/B 原始 JSONL、manifest、stdout 和 tegrastats 保存在机器人本机 `logs/rl100_performance_a9751bd/{bounded,unbounded}`；两份 manifest 的 `git_commit` 均为 `a9751bd29117b0d706d68e5b75d5bb9a664fe70d`。
 
 结论：此前约 0.9 s/次并非模型本身固定需要 0.9 s。模型单独预热仅约 0.417 s，但整机并发时因 70.8M 参数的 10 步 DDIM、三相机处理和换页竞争被放大到约 1.25 s。继续只调 ROS timeout 或 action buffer 不能解决吞吐问题。
 
