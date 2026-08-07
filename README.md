@@ -179,6 +179,85 @@ python kuavo_deploy/eval.py
 
 ---
 
+## 🦾 RL100 后续操作（Kuavo 5W 真机）
+
+当前三相机同步已经稳定，点云反投影也已限流；但旧 checkpoint 是 **DDIM 10 步、`use_cm: false`**。实机 shadow 中限流后的推理 p95 仍约 1.99 s，明显超过 10 Hz 下 4-step action chunk 的 0.4 s，因此旧 checkpoint **只用于 shadow 排查，不要直接 live**。详细数据见 [`docs/RL100_REAL_DEPLOY_TROUBLESHOOTING.md`](docs/RL100_REAL_DEPLOY_TROUBLESHOOTING.md)。
+
+### 1. 重新构建训练数据
+
+在线部署与 raw-bag 转换现在共用 `pointcloud_candidate_pixels_per_camera: 16384`，最终输入保持 `(1024, 3)`。采集新数据后重新构建：
+
+```bash
+cd ~/wjy/robot-il/LeTools-Learning
+bash scripts/rl/run_rl100_zarr_collect.sh preflight
+bash scripts/rl/run_rl100_zarr_collect.sh build \
+  --config configs/rl/rl100_zarr_collect_upper_cams.yaml \
+  --overwrite
+```
+
+原始 rosbag 采集与标签流程见 [`docs/RL100_RAW_ROSBAG_COLLECTION.md`](docs/RL100_RAW_ROSBAG_COLLECTION.md)。
+
+### 2. 在独立 RL-100 仓库训练一阶段 CM
+
+训练仓库位于 `third_party/RL-100`，其 README 已补充 Kuavo/RL100 训练说明。目标 checkpoint 必须完成 DDIM→CM 的 `after_offline` 蒸馏，并满足：
+
+- `policy.use_cm=True`
+- `cm_inference_steps=1`
+- `distill_phase=after_offline`
+- 保持 `n_obs_steps=3`、state/action/point-cloud 契约与数据集一致
+
+训练完成后把 checkpoint 放入 `third_party/RL-100/data/`，并更新 `configs/rl/rl100_real_deploy.yaml` 的 `checkpoint.path`。
+
+### 3. 先检查 checkpoint，禁止跳步
+
+```bash
+export ROS_MASTER_URI=http://kuavo_master:11311
+export ROS_IP=192.168.26.12
+cd ~/wjy/robot-il/LeTools-Learning
+
+bash scripts/rl/run_rl100_real.sh inspect-checkpoint \
+  --config configs/rl/rl100_real_deploy.yaml
+```
+
+输出必须确认 `use_cm: true`、`scheduler_type: cm`、`cm_inference_steps: 1`（或等价的一阶段 CM 配置），预热后的推理延迟应明显低于 0.4 s。
+
+### 4. 真机只读验收
+
+先启动机器人下位机和三相机 launch，再执行：
+
+```bash
+bash scripts/rl/run_rl100_real.sh ros-preflight \
+  --config configs/rl/rl100_real_deploy.yaml --duration-s 60
+
+bash scripts/rl/run_rl100_real.sh shadow \
+  --config configs/rl/rl100_real_deploy.yaml \
+  --max-steps 1000 --duration-s 60 --preflight-timeout-s 10
+```
+
+进入 live 前必须同时满足：无 terminal/source fault、`published=false`、相机 header/receive skew 不超配置阈值、推理 p95 `< 0.4 s`、SWAP 不持续增长。任一条件不满足就留在 shadow 排查。
+
+### 5. 最后才允许有限 live
+
+确认物理急停可用、机器人周围无人，并用 VR 手动进入 external control。先跑 1 step：
+
+```bash
+bash scripts/rl/run_rl100_real.sh live \
+  --config configs/rl/rl100_real_deploy.yaml \
+  --max-steps 1 --duration-s 1 --preflight-timeout-s 10 \
+  --confirm-live --physical-estop-ready --live-token rl100-live
+```
+
+1 step 安全通过后，才运行有限时长任务：
+
+```bash
+bash scripts/rl/run_rl100_real.sh live \
+  --config configs/rl/rl100_real_deploy.yaml \
+  --max-steps 200 --duration-s 100 --preflight-timeout-s 10 \
+  --confirm-live --physical-estop-ready --live-token rl100-live
+```
+
+---
+
 ## 🗂️ 项目结构
 
 ```text
