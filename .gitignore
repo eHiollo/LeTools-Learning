@@ -237,3 +237,6 @@ configs/rl/local/*
 
 # Local KuavoBrain vendor checkout (nested git, multi-GB). Keep out of this repo.
 third_party/kuavo_brain/
+
+# Independent nested git checkout (not a submodule). Train remotely; Orin uses for inference.
+third_party/RL-100/
