@@ -387,7 +387,7 @@ bash scripts/rl/run_rl100_real.sh live \
 ```bash
 bash scripts/rl/run_rl100_real.sh live \
   --config configs/rl/rl100_real_deploy.yaml \
-  --max-steps 200 --duration-s 20 --preflight-timeout-s 10 \
+  --max-steps 200 --duration-s 100 --preflight-timeout-s 10 \
   --confirm-live --physical-estop-ready --live-token rl100-live
 ```
 

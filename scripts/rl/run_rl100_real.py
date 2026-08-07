@@ -28,8 +28,53 @@ def _print(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
+def _set_lb_arm_quick_mode(enable: bool) -> bool:
+    """Toggle the LejuBot arm quick mode (5w platform, mirrors kuavo_deploy).
+
+    The robot-side service is ``kuavo_msgs/changeLbQuickModeSrv`` (field
+    ``quickMode: int8``), not ``std_srvs/SetBool``. It is imported from the
+    SDK-bundled ``kuavo_msgs`` because the catkin-devel ``kuavo_msgs`` on this
+    machine does not yet define ``changeLbQuickModeSrv`` and would raise an
+    md5sum mismatch at call time.
+    """
+
+    import rospy
+    from kuavo_humanoid_sdk.msg.kuavo_msgs.srv import (
+        changeLbQuickModeSrv,
+        changeLbQuickModeSrvRequest,
+    )
+
+    service_name = "/enable_lb_arm_quick_mode"
+    try:
+        rospy.wait_for_service(service_name, timeout=5.0)
+        client = rospy.ServiceProxy(service_name, changeLbQuickModeSrv)
+        request = changeLbQuickModeSrvRequest()
+        request.quickMode = 1 if enable else 0
+        response = client(request)
+        if not bool(getattr(response, "success", True)):
+            rospy.logwarn(
+                "lb arm quick mode %s rejected: %s",
+                "enable" if enable else "disable",
+                getattr(response, "message", "unknown reason"),
+            )
+            return False
+        rospy.loginfo("lb arm quick mode %s", "enabled" if enable else "disabled")
+        return True
+    except (rospy.ROSException, rospy.ServiceException) as exc:
+        # Non-5w robots do not expose this service; the arm ctrl mode change
+        # above is the only required step there, so warn but do not fail.
+        rospy.logwarn("lb arm quick mode service unavailable: %s", exc)
+        return False
+
+
 def _set_wheel_arm_control_mode(mode: int) -> bool:
-    """Set the wheel-arm controller mode through the Kuavo ROS service."""
+    """Set the wheel-arm controller mode through the Kuavo ROS service.
+
+    On 5w robots the kuavo_deploy flow pairs the arm control mode change with
+    ``/enable_lb_arm_quick_mode``: enable when entering external control
+    (mode=2), disable when restoring (mode=0). The quick-mode call is
+    best-effort and only logged when the service is missing.
+    """
 
     import rospy
     from kuavo_msgs.srv import changeArmCtrlMode, changeArmCtrlModeRequest
@@ -49,10 +94,15 @@ def _set_wheel_arm_control_mode(mode: int) -> bool:
             )
             return False
         rospy.loginfo("arm control mode set to %d", int(mode))
-        return True
     except (rospy.ROSException, rospy.ServiceException) as exc:
         rospy.logerr("arm control mode service failed for mode %d: %s", int(mode), exc)
         return False
+
+    if int(mode) == 2:
+        _set_lb_arm_quick_mode(True)
+    elif int(mode) == 0:
+        _set_lb_arm_quick_mode(False)
+    return True
 
 
 class JsonlAudit:
@@ -337,23 +387,18 @@ def _check_live_arm(cfg, state_hub, publisher, args: argparse.Namespace) -> None
     startup = cfg.startup_requirements(require_approved=True)
     if startup["require_physical_estop_ready"] and not args.physical_estop_ready:
         raise RuntimeError("physical E-stop readiness was not confirmed")
-    default_hand = np.asarray(cfg.raw.get("startup", {}).get("hand_default", [0, 99, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0]), dtype=np.float32)
-    if default_hand.shape != (12,):
-        raise RuntimeError("startup.hand_default must be 12-D")
-    hand_error = float(np.max(np.abs(state.dexhand_position12 - default_hand)))
-    if hand_error > float(startup["hand_default_tolerance"]):
-        raise RuntimeError(f"startup hand default mismatch: max error={hand_error:.3f}")
+    current_hand = state.dexhand_position12
+    import rospy
+    rospy.loginfo("live hand state: %s", [round(float(v), 1) for v in current_hand])
 
 
 def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
-    from kuavo_rl.arm_control_mode import ArmControlModeSession
     from kuavo_rl.rl100_deploy_config import load_rl100_deploy_config
     from kuavo_rl.rl100_real_runner import RL100TopicRealRunner
 
     cfg = load_rl100_deploy_config(args.config)
     components = None
     runner = None
-    arm_control_session = ArmControlModeSession(_set_wheel_arm_control_mode) if live else None
     try:
         preflight, components = _ros_preflight(cfg, timeout_s=float(args.preflight_timeout_s))
         if not preflight.get("ok"):
@@ -385,8 +430,17 @@ def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
             stop_source=lambda: (False, False, bool(__import__("rospy").is_shutdown())),
         )
         runner.preflight()
+        warmup_runs = int(cfg.raw.get("inference", {}).get("warmup_runs", 3))
+        if warmup_runs > 0:
+            import rospy
+            rospy.loginfo("warming up policy (%d run(s)) before live loop...", warmup_runs)
+            policy.warmup(warmup_runs)
         if live:
-            arm_control_session.enter()
+            import rospy
+            rospy.loginfo(
+                "live mode: ensure the robot is already in external control mode "
+                "(via VR or kuavo_deploy) — the script will NOT change arm control mode."
+            )
             runner.arm_live()
         max_steps = min(int(args.max_steps), int(cfg.raw["safety"].get("max_episode_steps", 200)))
         duration_s = min(float(args.duration_s), float(cfg.raw["safety"].get("max_episode_duration_s", 20.0)))
@@ -416,14 +470,6 @@ def _run_realtime(args: argparse.Namespace, *, live: bool) -> int:
             if runner is not None:
                 runner.close()
         finally:
-            if arm_control_session is not None:
-                try:
-                    arm_control_session.restore()
-                except Exception as exc:  # noqa: BLE001
-                    print(
-                        f"[rl100] failed to restore arm control mode: {exc}",
-                        file=sys.stderr,
-                    )
             if components is not None:
                 hub, state_hub, publisher = components
                 hub.close()

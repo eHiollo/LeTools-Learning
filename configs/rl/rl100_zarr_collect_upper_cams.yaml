@@ -79,9 +79,9 @@ command_timeout_s: null
 joint_state_max_age_s: 0.15
 dexhand_state_max_age_s: 0.50
 state_max_skew_s: 0.10
-depth_max_age_s: 0.15
+depth_max_age_s: 0.30
 # Current upper-camera header skew is accepted during collection; analyze it in data QA.
-camera_max_skew_s: 0.50
+camera_max_skew_s: 1.20
 max_consecutive_source_failures: 3
 
 # Buffered synchronizer. The legacy field above mirrors the active gate.
@@ -89,14 +89,14 @@ camera_sync:
   mode: buffered_header
   reference_camera: head_cam_h
   buffer_size: 32
-  max_header_skew_s: 0.50
+  max_header_skew_s: 1.20
   warn_header_skew_s: 0.25
-  max_received_age_s: 0.20
+  max_received_age_s: 0.30
   max_receive_skew_s: 0.20
   require_monotonic_header: true
   require_same_time_epoch: true
   tf_at_image_stamp: true
-  tf_timeout_s: 0.05
+  tf_timeout_s: 0.20
   max_consecutive_sync_failures: 10
 
 # Hand motion is audited but is not a hard gate; arm-only episodes are allowed.

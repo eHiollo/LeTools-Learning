@@ -106,6 +106,7 @@ class RL100TopicActionScheduler:
         self._last_chunk: np.ndarray | None = None
         self._last_inference_s: float | None = None
         self._last_stale_steps_dropped = 0
+        self._pending_at_submit: int = 0
         self._lock = threading.Lock()
         self._closed = False
 
@@ -119,6 +120,7 @@ class RL100TopicActionScheduler:
             self._last_chunk = None
             self._last_inference_s = None
             self._last_stale_steps_dropped = 0
+            self._pending_at_submit = 0
             future = self._future
             self._future = None
         if future is not None:
@@ -180,6 +182,7 @@ class RL100TopicActionScheduler:
                 return
             generation = self._generation
             submitted_at = time.monotonic()
+            self._pending_at_submit = len(self._pending)
             self._last_error = None
             self._future = self._executor.submit(
                 self._infer,
@@ -199,10 +202,13 @@ class RL100TopicActionScheduler:
             self._last_error = result.error
             if result.chunk is None:
                 return
-            stale_steps = min(
-                result.chunk.shape[0],
-                max(0, int(math.floor(result.inference_s * self.action_hz))),
-            )
+            # Drop only the action steps that were actually consumed from the
+            # buffer while this inference was running.  The previous wall-clock
+            # heuristic (inference_s * action_hz) was wrong for the first
+            # inference: the buffer was empty so the robot was holding, not
+            # executing, and no chunk steps were stale.
+            steps_consumed = max(0, self._pending_at_submit - len(self._pending))
+            stale_steps = min(result.chunk.shape[0], steps_consumed)
             self._last_stale_steps_dropped = stale_steps
             chunk = result.chunk[stale_steps : self.execute_steps].copy()
             if chunk.shape[0] == 0:

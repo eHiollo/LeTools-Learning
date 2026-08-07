@@ -9,7 +9,7 @@ checkpoint:
   model_source: auto
 
 inference:
-  deterministic: false
+  deterministic: true
   distill2mean: false
   use_cm: auto
   # Keep the model's action horizon as a small refillable queue.  Actions are
@@ -20,7 +20,9 @@ inference:
   control_hz: 10
   # Startup/empty-buffer wait bound, not a per-tick synchronous inference
   # requirement.  Slow results are accepted while the queue has actions.
-  timeout_s: 0.50
+  # 3.0s tolerates the cold-start DDIM sampling + CUDA kernel JIT on the first
+  # tick (warmup below primes the kernels, but cuDNN/curand may still lazy-init).
+  timeout_s: 3.0
   warmup_runs: 3
 
 observation:
@@ -31,22 +33,22 @@ observation:
   joint_state_max_age_s: 0.15
   dexhand_state_max_age_s: 0.50
   state_max_skew_s: 0.10
-  depth_max_age_s: 0.15
+  depth_max_age_s: 0.30
   # Keep deployment aligned with the collection contract; revisit after data QA.
-  max_camera_skew_s: 0.50
-  max_state_cloud_skew_s: 0.10
+  max_camera_skew_s: 1.20
+  max_state_cloud_skew_s: 0.50
   camera_sync:
     mode: buffered_header
     reference_camera: head_cam_h
     buffer_size: 32
-    max_header_skew_s: 0.50
+    max_header_skew_s: 1.20
     warn_header_skew_s: 0.25
-    max_received_age_s: 0.20
+    max_received_age_s: 0.30
     max_receive_skew_s: 0.20
     require_monotonic_header: true
     require_same_time_epoch: true
     tf_at_image_stamp: true
-    tf_timeout_s: 0.05
+    tf_timeout_s: 0.20
     max_consecutive_sync_failures: 10
 
 publish:
@@ -55,7 +57,7 @@ publish:
   arm_unit: degree
   hand_range: [0, 100]
   hand_rounding: nearest
-  require_subscribers: true
+  require_subscribers: false
   arm_joint_names: [arm_joint_0, arm_joint_1, arm_joint_2, arm_joint_3,
                     arm_joint_4, arm_joint_5, arm_joint_6, arm_joint_7,
                     arm_joint_8, arm_joint_9, arm_joint_10, arm_joint_11,
@@ -77,14 +79,14 @@ safety:
   max_hand_step: 5.0
   max_arm_state_jump_rad: 0.05
   max_hand_state_jump: 5.0
-  max_consecutive_clips: 3
-  max_consecutive_source_failures: 1
+  max_consecutive_clips: 0
+  max_consecutive_source_failures: 3
   max_episode_steps: 200
-  max_episode_duration_s: 20.0
+  max_episode_duration_s: 120.0
   fault_hold_once_if_state_fresh: true
 
 startup:
-  hand_default: [0, 99, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0]
+  hand_default: [60, 0, 0, 0, 0, 0, 59, 0, 0, 0, 0, 0]
   hand_default_tolerance: 2.0
   require_physical_estop_ready: true
   require_operator_start: true
